@@ -15,22 +15,41 @@ another project.
   colors/fonts resolved either from a literal value or a
   `{ "token": "name" }` reference against your project's token file.
 - Reading a file's current shape tree via `penpot_get_file_snapshot`.
+- Rendering a shape or page to PNG/SVG via `penpot_export_shape` (requires
+  `PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD`, see below) — no browser tab
+  or Penpot plugin session needed on your end.
 
-## What this does NOT do
+## Render/export capability
 
-**There is no server-side render/export-to-image capability.** Penpot's RPC
-API has no endpoint that renders a shape, page, or file to PNG/SVG — the
-`create-file-thumbnail`/`create-file-object-thumbnail` methods take a
-client-*uploaded* image (thumbnail caching), not the reverse, and
-`export-binfile` is a binary `.penpot` backup format, not an image. This was
-confirmed by reading Penpot's full RPC method list, not assumed.
+`penpot_export_shape` renders a shape (or an entire page, by passing its
+root frame's id) to PNG or SVG, using Penpot's own server-side exporter —
+the same headless-Chromium-backed service Penpot's self-hosted stack
+already runs (the `penpotapp/exporter` container). No browser automation
+happens in this package; it's two HTTP calls (login, then export) against
+your Penpot instance.
 
-If you need a rendered image of a design (e.g. for visual QA), that
-currently requires a live browser tab with a Penpot file open and the
-official Penpot MCP plugin running (`export_shape` tool) — a separate,
-non-portable capability tied to an interactive session. This package does
-not attempt to work around that; it's a real property of Penpot's
-architecture today.
+This needs a **second, separate auth mode** from the rest of this package:
+Penpot's export pipeline (`POST /api/export`) is a distinct microservice
+from the `/api/rpc/command/*` surface everything else here uses, and it
+authenticates purely via a session cookie — a personal access token in an
+`Authorization` header is never read on this path (confirmed by reading
+Penpot's exporter source: its `wrap-auth` looks for a literal `auth-token`
+cookie and nothing else). So this tool logs in with
+`PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD` to obtain that cookie,
+independently of `PENPOT_ACCESS_TOKEN`.
+
+**Important:** `PENPOT_ACCESS_TOKEN` and `PENPOT_LOGIN_EMAIL`/
+`PENPOT_LOGIN_PASSWORD` must belong to **the same Penpot account** (or at
+least accounts with access to the same team). If they're different
+accounts, `penpot_export_shape` will time out — the export session can't
+see a file it has no permission to open, and Penpot's exporter doesn't
+distinguish "shape not visible" from "access denied," so the failure surfaces
+as a generic 10-second render timeout.
+
+If your Penpot instance doesn't expose password login (e.g. SSO-only
+instances), or you'd rather not configure these credentials, simply omit
+`PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD` — the export tool won't be
+registered, and every other tool works exactly as before.
 
 Also out of scope: rotated shapes (only `rotation: 0` is supported —
 `selrect`/`points`/`transform` are computed as identity-matrix math, which
@@ -39,11 +58,17 @@ only holds for unrotated shapes), and components/variants/auto-layout.
 ## Setup
 
 1. Generate a Penpot access token: your Penpot instance → Account settings
-   → Access tokens.
+   → Access tokens. (Self-hosted instances: this section is hidden unless
+   the backend/frontend are started with `PENPOT_FLAGS` including
+   `enable-access-tokens`.)
 2. Create a token file for your project (see `design-tokens/*.tokens.json`
    in the consuming repo for an example — or write your own matching the
    schema below).
-3. Register this server in your MCP client config, e.g.:
+3. If you want `penpot_export_shape`, also set `PENPOT_LOGIN_EMAIL`/
+   `PENPOT_LOGIN_PASSWORD` to the **same account** the access token above
+   belongs to (see "Render/export capability" above for why). Skip this if
+   you don't need rendering.
+4. Register this server in your MCP client config, e.g.:
    ```json
    {
      "mcpServers": {
@@ -53,7 +78,9 @@ only holds for unrotated shapes), and components/variants/auto-layout.
          "env": {
            "PENPOT_BASE_URL": "https://your-penpot-instance.example.com",
            "PENPOT_ACCESS_TOKEN": "your-token-here",
-           "PENPOT_TOKENS_PATH": "/path/to/your-project/design-tokens/tokens.json"
+           "PENPOT_TOKENS_PATH": "/path/to/your-project/design-tokens/tokens.json",
+           "PENPOT_LOGIN_EMAIL": "same-account-as-the-token-above@example.com",
+           "PENPOT_LOGIN_PASSWORD": "that-account's-password"
          }
        }
      }
@@ -70,7 +97,9 @@ only holds for unrotated shapes), and components/variants/auto-layout.
          "env": {
            "PENPOT_BASE_URL": "https://your-penpot-instance.example.com",
            "PENPOT_ACCESS_TOKEN": "your-token-here",
-           "PENPOT_TOKENS_PATH": "/path/to/your-project/design-tokens/tokens.json"
+           "PENPOT_TOKENS_PATH": "/path/to/your-project/design-tokens/tokens.json",
+           "PENPOT_LOGIN_EMAIL": "same-account-as-the-token-above@example.com",
+           "PENPOT_LOGIN_PASSWORD": "that-account's-password"
          }
        }
      }
@@ -109,7 +138,9 @@ write a token file for that project, and register the server with a
 
 ## Known limitations
 
-- No render/export capability (see above).
+- `penpot_export_shape` requires password-login credentials for the same
+  account as the access token — see "Render/export capability" above.
+  Instances that are SSO/OIDC-only (no password login) can't use it.
 - Unrotated shapes only.
 - No component, variant, or auto-layout tool support — only `rect`, `frame`,
   `text`.

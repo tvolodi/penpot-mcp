@@ -1,6 +1,6 @@
 {
   "name": "@ai-dala/penpot-headless",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Portable MCP server for headless Penpot project/file/content management via Penpot's RPC API. No browser, no Penpot plugin session required. Copy this directory to any project to reuse.",
   "type": "module",
   "main": "dist/server.js",

@@ -15,8 +15,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadConfig } from './config.js'
 import { PenpotRpcClient, PenpotRpcError } from './rpc-client.js'
+import { PenpotExporterClient } from './exporter-client.js'
 import { projectFileTools, type ToolDefinition } from './tools/project-files.js'
 import { contentTools } from './tools/content.js'
+import { registerExportTool } from './tools/export.js'
 
 function registerTools(server: McpServer, client: PenpotRpcClient, tools: ToolDefinition<any>[]): void {
   for (const tool of tools) {
@@ -53,11 +55,20 @@ async function main(): Promise<void> {
 
   const server = new McpServer({
     name: 'penpot-headless',
-    version: '0.1.0',
+    version: '0.2.0',
   })
 
   registerTools(server, client, projectFileTools)
   registerTools(server, client, contentTools(config.PENPOT_TOKENS_PATH))
+
+  if (config.PENPOT_LOGIN_EMAIL && config.PENPOT_LOGIN_PASSWORD) {
+    const exporter = new PenpotExporterClient(
+      config.PENPOT_BASE_URL,
+      config.PENPOT_LOGIN_EMAIL,
+      config.PENPOT_LOGIN_PASSWORD,
+    )
+    registerExportTool(server, exporter)
+  }
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
