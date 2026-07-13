@@ -5,8 +5,8 @@ using Penpot's RPC API directly. No browser, no Penpot plugin session.
 
 This package has **zero project-specific knowledge** — no hardcoded colors,
 fonts, or Penpot instance URL. Every consuming project supplies its own
-config and token file, so this directory can be copied as-is into another
-project.
+config and token file, so it can be installed from npm or copied as-is into
+another project.
 
 ## What this does
 
@@ -38,22 +38,35 @@ only holds for unrotated shapes), and components/variants/auto-layout.
 
 ## Setup
 
-1. Install dependencies:
-   ```
-   npm install
-   ```
-2. Generate a Penpot access token: your Penpot instance → Account settings
+1. Generate a Penpot access token: your Penpot instance → Account settings
    → Access tokens.
-3. Create a token file for your project (see `design-tokens/*.tokens.json`
+2. Create a token file for your project (see `design-tokens/*.tokens.json`
    in the consuming repo for an example — or write your own matching the
    schema below).
-4. Register this server in your MCP client config, e.g.:
+3. Register this server in your MCP client config, e.g.:
    ```json
    {
      "mcpServers": {
        "penpot-headless": {
          "command": "npx",
-         "args": ["tsx", "/path/to/mcp-servers/penpot-headless/src/server.ts"],
+         "args": ["-y", "@ai-dala/penpot-headless"],
+         "env": {
+           "PENPOT_BASE_URL": "https://your-penpot-instance.example.com",
+           "PENPOT_ACCESS_TOKEN": "your-token-here",
+           "PENPOT_TOKENS_PATH": "/path/to/your-project/design-tokens/tokens.json"
+         }
+       }
+     }
+   }
+   ```
+
+   Or, if working from a local clone instead of the published package:
+   ```json
+   {
+     "mcpServers": {
+       "penpot-headless": {
+         "command": "npx",
+         "args": ["tsx", "/path/to/penpot-mcp/src/server.ts"],
          "env": {
            "PENPOT_BASE_URL": "https://your-penpot-instance.example.com",
            "PENPOT_ACCESS_TOKEN": "your-token-here",
@@ -83,11 +96,16 @@ string or `{ "token": "accent" }`, resolved against this file at call time.
 
 ## Copying to another project
 
-This directory has its own `package.json`/`tsconfig.json` and depends only
-on `@modelcontextprotocol/sdk` and `zod` — no framework dependencies. Copy
-the whole `penpot-headless/` directory into the new project, run
-`npm install`, write a token file for that project, and register the server
-with a `PENPOT_TOKENS_PATH` pointing at it.
+This package is published to npm as `@ai-dala/penpot-headless`, so most
+consuming projects can just reference it via `npx` (see above) without a
+local copy.
+
+If you'd rather vendor it, this directory has its own
+`package.json`/`tsconfig.json` and depends only on
+`@modelcontextprotocol/sdk` and `zod` — no framework dependencies. Copy the
+whole `penpot-headless/` directory into the new project, run `npm install`,
+write a token file for that project, and register the server with a
+`PENPOT_TOKENS_PATH` pointing at it.
 
 ## Known limitations
 
