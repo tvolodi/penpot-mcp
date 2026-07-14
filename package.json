@@ -14,8 +14,13 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run"
   },
   "keywords": [
     "penpot",
@@ -37,8 +42,9 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3",
-    "@types/node": "^22.10.0"
+    "vitest": "^4.1.10"
   }
 }

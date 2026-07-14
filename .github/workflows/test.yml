@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - run: npm run typecheck
+      - run: npm run typecheck:test
+      - run: npm test
+
+  integration:
+    runs-on: ubuntu-latest
+    # Only runs with real Penpot credentials configured as repo secrets. Skips
+    # cleanly (not a failure) on forks/PRs that don't have them, since this job
+    # would otherwise fail for every external contributor.
+    if: ${{ vars.PENPOT_INTEGRATION_TESTS_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - run: npm run test:integration
+        env:
+          PENPOT_BASE_URL: ${{ secrets.PENPOT_BASE_URL }}
+          PENPOT_ACCESS_TOKEN: ${{ secrets.PENPOT_ACCESS_TOKEN }}

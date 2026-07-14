@@ -16,6 +16,14 @@ another project.
   `{ "token": "name" }` reference against your project's token file.
   Shapes may be rotated via an optional `rotation` field (degrees,
   clockwise, about the shape's center).
+- Shape editing: `penpot_update_shapes` changes an existing shape in place
+  by id — position, size, rotation, name, fill, stroke, corner radii, or
+  (for text) content/font. Only the fields you pass are touched; everything
+  else (children, component/variant tags, layout) is left as-is. Geometry
+  changes automatically recompute the shape's selection box and transform,
+  so a partial edit (e.g. just `width`) can't desync from the rest of the
+  shape's geometry. Layout/layoutItem aren't editable this way — only
+  settable at creation time via `penpot_add_shapes`.
 - Auto-layout: a `frame` may declare flex or grid layout via an optional
   `layout` field (direction, gap, padding, alignment; grid also takes
   row/column track definitions). Any shape may set `layoutItem` to control
@@ -140,6 +148,27 @@ registered, and every other tool works exactly as before.
 Any color-typed field in `penpot_add_shapes` accepts either a literal hex
 string or `{ "token": "accent" }`, resolved against this file at call time.
 
+## Testing
+
+Two suites, split because they need very different things:
+
+- **Unit** (`npm test`) — pure functions in `shape-builders.ts` (rotation
+  matrix math, layout attribute mapping, the camelCase-in/kebab-case-out
+  shape extraction `penpot_update_shapes` relies on). No network, no Penpot
+  account, runs anywhere.
+- **Integration** (`npm run test:integration`) — exercises the actual MCP
+  tool handlers against a real Penpot instance via `PENPOT_BASE_URL`/
+  `PENPOT_ACCESS_TOKEN` (reads `.env`, same as the server itself). Each
+  test creates its own scratch project and deletes it in a `finally` block,
+  even on failure — see `test/integration/helpers/scratch-project.ts`.
+  Skips itself (doesn't fail) if credentials aren't configured.
+
+This split matters because Penpot's RPC schema accepting a change is not
+the same as Penpot's editor correctly rendering or recognizing it — the
+variant-id bug documented in `shape-builders.ts` (`variantContainerAttrs`)
+was only caught by live testing, not by the schema validating successfully.
+`npm run test:all` runs both.
+
 ## Copying to another project
 
 This package is published to npm as `@ai-dala/penpot-headless`, so most
@@ -164,3 +193,33 @@ write a token file for that project, and register the server with a
   container, and this package's `mov-objects` RPC calls were found not to
   actually move shapes (accepted, but silently a no-op) — see the note on
   `variantContainerAttrs` in `shape-builders.ts`.
+- `penpot_update_shapes` can't change layout/layoutItem, and only supports
+  rect/frame/text (not path/group/circle/svg-raw/image/bool).
+
+## Possible future additions
+
+Ideas for further reducing agent friction, roughly in priority order:
+
+- [x] `penpot_update_shapes` — edit an existing shape's geometry/fill/stroke/
+      text in place. (Done — see above.)
+- [ ] `penpot_delete_shapes` — wraps `del-obj`; currently the only way to
+      remove a shape is not to create it in the first place.
+- [ ] `penpot_get_shape` — look up one shape (or a small subtree) by id,
+      instead of pulling the whole page via `penpot_get_file_snapshot` and
+      parsing a potentially large JSON blob client-side to find it.
+- [ ] `penpot_measure_text` — text `width`/`height` in `penpot_add_shapes`
+      are just numbers the caller has to guess; Penpot only knows real
+      rendered bounds after layout. A dry-run measurement (or an
+      "auto-size" flag) would remove a lot of trial-and-error resizing.
+- [ ] `penpot_clone_shapes` — plain-shape duplication (not the
+      component-instance path already covered by
+      `penpot_add_component_instance`).
+- [ ] `penpot_reorder_shapes` — wraps `reorder-children` (seen in the malli
+      schema dump during the variants investigation); z-order is currently
+      fixed at creation order with no bring-to-front/send-to-back.
+- [ ] `penpot_list_components` — enumerate a file's existing components,
+      instead of requiring the caller to have created them itself in the
+      same session or parse the snapshot's `components` map by hand.
+- [ ] `penpot_find_shapes` — predicate/name-based search over a page
+      (mirrors the plugin API's `findShapes`), instead of the caller
+      walking the tree itself for "every text shape" or "the shape named X."
