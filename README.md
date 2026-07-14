@@ -14,6 +14,27 @@ another project.
 - Shape creation — `rect`, `frame`, `text` — via `penpot_add_shapes`, with
   colors/fonts resolved either from a literal value or a
   `{ "token": "name" }` reference against your project's token file.
+  Shapes may be rotated via an optional `rotation` field (degrees,
+  clockwise, about the shape's center).
+- Auto-layout: a `frame` may declare flex or grid layout via an optional
+  `layout` field (direction, gap, padding, alignment; grid also takes
+  row/column track definitions). Any shape may set `layoutItem` to control
+  its own placement within an auto-layout parent (sizing, alignment,
+  margins, min/max size, and — for grid parents — row/column/span).
+- Components: `penpot_create_component` registers a shape tree (same specs
+  as `penpot_add_shapes`) as a component's main instance; give shapes
+  explicit `id`s to nest them, and the one shape not parented to a sibling
+  becomes the root. `penpot_add_component_instance` then places a full
+  copy of that tree elsewhere on a page, linked back to the main instance
+  via Penpot's `shape-ref` so it's recognized as a proper component copy —
+  reusable any number of times.
+- Variants: `penpot_create_variant_group` groups two or more components
+  (built the same way as `penpot_create_component`, one per variant) into a
+  single container tagged with shared property axes (e.g. a "Button" with
+  Type=Primary/Secondary). This wires up Penpot's actual variant-swap
+  system — confirmed live via the Penpot plugin API, including
+  `instance.switchVariant(pos, value)` correctly swapping a placed
+  instance between variants.
 - Reading a file's current shape tree via `penpot_get_file_snapshot`.
 - Rendering a shape or page to PNG/SVG via `penpot_export_shape` (requires
   `PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD`, see below) — no browser tab
@@ -50,10 +71,6 @@ If your Penpot instance doesn't expose password login (e.g. SSO-only
 instances), or you'd rather not configure these credentials, simply omit
 `PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD` — the export tool won't be
 registered, and every other tool works exactly as before.
-
-Also out of scope: rotated shapes (only `rotation: 0` is supported —
-`selrect`/`points`/`transform` are computed as identity-matrix math, which
-only holds for unrotated shapes), and components/variants/auto-layout.
 
 ## Setup
 
@@ -141,6 +158,9 @@ write a token file for that project, and register the server with a
 - `penpot_export_shape` requires password-login credentials for the same
   account as the access token — see "Render/export capability" above.
   Instances that are SSO/OIDC-only (no password login) can't use it.
-- Unrotated shapes only.
-- No component, variant, or auto-layout tool support — only `rect`, `frame`,
-  `text`.
+- `penpot_create_variant_group` only builds new variant groups from scratch;
+  there's no tool to add a variant to an already-existing component/group,
+  since that requires reparenting an existing shape into the group's
+  container, and this package's `mov-objects` RPC calls were found not to
+  actually move shapes (accepted, but silently a no-op) — see the note on
+  `variantContainerAttrs` in `shape-builders.ts`.

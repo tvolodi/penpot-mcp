@@ -7,10 +7,15 @@
  * common/src/app/common/files/changes.cljc, and confirmed empirically
  * against a live instance).
  *
- * Scope: unrotated shapes only (rotation: 0). For those, `selrect`/`points`
- * are pure functions of x/y/width/height, and `transform`/`transform-inverse`
- * are the identity matrix — see `setup-rect` in shape.cljc. Rotated shapes
- * need real point-transform math and are out of scope here.
+ * Supports rotated shapes: `points` are the shape's corners rotated about
+ * its center, `selrect` is the axis-aligned bounding box of those rotated
+ * points, and `transform`/`transform-inverse` are the rotation matrix (and
+ * its inverse) about the center — see `setup-rect` in shape.cljc.
+ *
+ * Also supports flex/grid auto-layout (`layoutAttrs`/`layoutItemAttrs`) and
+ * components (`componentRootAttrs`/`addComponent`/`cloneComponentInstance`),
+ * whose exact wire attribute names were verified empirically against a live
+ * instance rather than assumed from the Clojure source.
  *
  * This does NOT talk to the network and carries no project-specific colors
  * or fonts — every fill/stroke/font value is a caller-supplied parameter.
@@ -35,17 +40,79 @@ const IDENTITY_MATRIX = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
 export const ROOT_FRAME_ID = '00000000-0000-0000-0000-000000000000'
 
 type Rect = { x: number; y: number; width: number; height: number }
+type Point = { x: number; y: number }
+type Matrix = { a: number; b: number; c: number; d: number; e: number; f: number }
 
-function selrectAndPoints(rect: Rect) {
-  const { x, y, width, height } = rect
+/** Rotates `point` by `degrees` around `center` (clockwise, matching Penpot's screen-space convention). */
+function rotatePoint(point: Point, center: Point, degrees: number): Point {
+  const rad = (degrees * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  const dx = point.x - center.x
+  const dy = point.y - center.y
   return {
-    selrect: { x, y, width, height, x1: x, y1: y, x2: x + width, y2: y + height },
-    points: [
-      { x, y },
-      { x: x + width, y },
-      { x: x + width, y: y + height },
-      { x, y: y + height },
-    ],
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos,
+  }
+}
+
+/** Builds the 2D affine rotation matrix (by `degrees`, about `center`) in Penpot's `a,b,c,d,e,f` form. */
+function rotationMatrix(center: Point, degrees: number): Matrix {
+  const rad = (degrees * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  return {
+    a: cos,
+    b: sin,
+    c: -sin,
+    d: cos,
+    e: center.x - center.x * cos + center.y * sin,
+    f: center.y - center.x * sin - center.y * cos,
+  }
+}
+
+/**
+ * `points` are the shape's corners rotated about its center; `selrect` is the
+ * axis-aligned box enclosing those rotated points (matching Penpot's
+ * `setup-rect`). `width`/`height` on the shape itself always stay the
+ * pre-rotation dimensions — only `selrect`'s span reflects the rotated bbox.
+ */
+function selrectAndPoints(rect: Rect, rotation: number) {
+  const { x, y, width, height } = rect
+  const corners: Point[] = [
+    { x, y },
+    { x: x + width, y },
+    { x: x + width, y: y + height },
+    { x, y: y + height },
+  ]
+  if (rotation === 0) {
+    return {
+      selrect: { x, y, width, height, x1: x, y1: y, x2: x + width, y2: y + height },
+      points: corners,
+    }
+  }
+  const center = { x: x + width / 2, y: y + height / 2 }
+  const points = corners.map((p) => rotatePoint(p, center, rotation))
+  const xs = points.map((p) => p.x)
+  const ys = points.map((p) => p.y)
+  const x1 = Math.min(...xs)
+  const y1 = Math.min(...ys)
+  const x2 = Math.max(...xs)
+  const y2 = Math.max(...ys)
+  return {
+    selrect: { x: x1, y: y1, width: x2 - x1, height: y2 - y1, x1, y1, x2, y2 },
+    points,
+  }
+}
+
+function transforms(rect: Rect, rotation: number) {
+  if (rotation === 0) {
+    return { transform: IDENTITY_MATRIX, 'transform-inverse': IDENTITY_MATRIX }
+  }
+  const center = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+  return {
+    transform: rotationMatrix(center, rotation),
+    'transform-inverse': rotationMatrix(center, -rotation),
   }
 }
 
@@ -56,11 +123,116 @@ type BaseParams = {
   y: number
   width: number
   height: number
+  rotation?: number
   parentId: string
   frameId: string
+  /** Placement within the parent's auto-layout, if the parent has one. */
+  layoutItem?: LayoutItem
 }
 
 type CornerRadii = { r1?: number; r2?: number; r3?: number; r4?: number }
+
+type GridTrack = { type: 'fixed' | 'percent' | 'flex' | 'auto'; value?: number }
+
+/** Auto-layout config for a `frame`, verified against a live Penpot instance's `add-obj` schema. */
+export type FlexLayout = {
+  type: 'flex'
+  dir?: 'row' | 'row-reverse' | 'column' | 'column-reverse'
+  rowGap?: number
+  columnGap?: number
+  wrapType?: 'wrap' | 'nowrap'
+  paddingType?: 'simple' | 'multiple'
+  /** Applies to all four sides when `paddingType` is 'simple'; only p1 is read in that case. */
+  padding?: { p1?: number; p2?: number; p3?: number; p4?: number }
+  alignItems?: 'start' | 'center' | 'end' | 'stretch'
+  alignContent?: 'start' | 'center' | 'end' | 'stretch' | 'space-between' | 'space-around' | 'space-evenly'
+  justifyItems?: 'start' | 'center' | 'end' | 'stretch'
+  justifyContent?: 'start' | 'center' | 'end' | 'stretch' | 'space-between' | 'space-around' | 'space-evenly'
+}
+
+export type GridLayout = {
+  type: 'grid'
+  dir?: 'row' | 'column'
+  rowGap?: number
+  columnGap?: number
+  paddingType?: 'simple' | 'multiple'
+  /** Applies to all four sides when `paddingType` is 'simple'; only p1 is read in that case. */
+  padding?: { p1?: number; p2?: number; p3?: number; p4?: number }
+  alignItems?: 'start' | 'center' | 'end' | 'stretch'
+  alignContent?: 'start' | 'center' | 'end' | 'stretch' | 'space-between' | 'space-around' | 'space-evenly'
+  justifyItems?: 'start' | 'center' | 'end' | 'stretch'
+  justifyContent?: 'start' | 'center' | 'end' | 'stretch' | 'space-between' | 'space-around' | 'space-evenly'
+  rows?: GridTrack[]
+  columns?: GridTrack[]
+}
+
+export type Layout = FlexLayout | GridLayout
+
+function layoutAttrs(layout: Layout | undefined): Record<string, unknown> {
+  if (!layout) return {}
+  const padding = layout.padding
+  const attrs: Record<string, unknown> = {
+    layout: layout.type,
+    'layout-gap': { 'row-gap': layout.rowGap ?? 0, 'column-gap': layout.columnGap ?? 0 },
+    'layout-padding-type': layout.paddingType ?? 'simple',
+    'layout-padding': { p1: padding?.p1 ?? 0, p2: padding?.p2 ?? 0, p3: padding?.p3 ?? 0, p4: padding?.p4 ?? 0 },
+    'layout-align-items': layout.alignItems ?? 'start',
+    'layout-justify-content': layout.justifyContent ?? 'start',
+  }
+  if (layout.alignContent) attrs['layout-align-content'] = layout.alignContent
+  if (layout.justifyItems) attrs['layout-justify-items'] = layout.justifyItems
+  if (layout.type === 'flex') {
+    attrs['layout-flex-dir'] = layout.dir ?? 'row'
+    attrs['layout-wrap-type'] = layout.wrapType ?? 'nowrap'
+  } else {
+    attrs['layout-grid-dir'] = layout.dir ?? 'row'
+    attrs['layout-grid-rows'] = layout.rows ?? [{ type: 'flex', value: 1 }]
+    attrs['layout-grid-columns'] = layout.columns ?? [{ type: 'flex', value: 1 }]
+  }
+  return attrs
+}
+
+/** Placement of a shape within an ancestor's auto-layout (flex or grid). */
+export type LayoutItem = {
+  absolute?: boolean
+  zIndex?: number
+  horizontalSizing?: 'fill' | 'auto' | 'fix'
+  verticalSizing?: 'fill' | 'auto' | 'fix'
+  alignSelf?: 'start' | 'center' | 'end' | 'auto' | 'stretch'
+  margin?: { m1?: number; m2?: number; m3?: number; m4?: number }
+  maxWidth?: number
+  maxHeight?: number
+  minWidth?: number
+  minHeight?: number
+  /** Only meaningful when the parent has a grid layout. 1-based. */
+  row?: number
+  column?: number
+  rowSpan?: number
+  columnSpan?: number
+}
+
+function layoutItemAttrs(item: LayoutItem | undefined): Record<string, unknown> {
+  if (!item) return {}
+  const attrs: Record<string, unknown> = {}
+  if (item.absolute !== undefined) attrs['layout-item-absolute'] = item.absolute
+  if (item.zIndex !== undefined) attrs['layout-item-z-index'] = item.zIndex
+  if (item.horizontalSizing) attrs['layout-item-h-sizing'] = item.horizontalSizing
+  if (item.verticalSizing) attrs['layout-item-v-sizing'] = item.verticalSizing
+  if (item.alignSelf) attrs['layout-item-align-self'] = item.alignSelf
+  if (item.margin) {
+    const m = item.margin
+    attrs['layout-item-margin'] = { m1: m.m1 ?? 0, m2: m.m2 ?? 0, m3: m.m3 ?? 0, m4: m.m4 ?? 0 }
+  }
+  if (item.maxWidth !== undefined) attrs['layout-item-max-w'] = item.maxWidth
+  if (item.maxHeight !== undefined) attrs['layout-item-max-h'] = item.maxHeight
+  if (item.minWidth !== undefined) attrs['layout-item-min-w'] = item.minWidth
+  if (item.minHeight !== undefined) attrs['layout-item-min-h'] = item.minHeight
+  if (item.row !== undefined) attrs['layout-item-row'] = item.row
+  if (item.column !== undefined) attrs['layout-item-column'] = item.column
+  if (item.rowSpan !== undefined) attrs['layout-item-row-span'] = item.rowSpan
+  if (item.columnSpan !== undefined) attrs['layout-item-column-span'] = item.columnSpan
+  return attrs
+}
 
 export function rect(
   params: BaseParams & {
@@ -68,8 +240,24 @@ export function rect(
     strokes?: Stroke[]
   } & CornerRadii,
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, parentId, frameId, fills, strokes, r1, r2, r3, r4 } =
-    params
+  const {
+    id = randomUUID(),
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation = 0,
+    parentId,
+    frameId,
+    layoutItem,
+    fills,
+    strokes,
+    r1,
+    r2,
+    r3,
+    r4,
+  } = params
   return {
     id,
     type: 'rect',
@@ -78,18 +266,18 @@ export function rect(
     y,
     width,
     height,
-    rotation: 0,
+    rotation,
     'parent-id': parentId,
     'frame-id': frameId,
-    ...selrectAndPoints({ x, y, width, height }),
-    transform: IDENTITY_MATRIX,
-    'transform-inverse': IDENTITY_MATRIX,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
     fills: fills ?? [],
     strokes: strokes ?? [],
     r1: r1 ?? 0,
     r2: r2 ?? 0,
     r3: r3 ?? 0,
     r4: r4 ?? 0,
+    ...layoutItemAttrs(layoutItem),
   }
 }
 
@@ -97,10 +285,29 @@ export function frame(
   params: BaseParams & {
     fills?: Fill[]
     strokes?: Stroke[]
+    /** Adds flex or grid auto-layout to this frame, controlling how its children are positioned. */
+    layout?: Layout
   } & CornerRadii,
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, parentId, frameId, fills, strokes, r1, r2, r3, r4 } =
-    params
+  const {
+    id = randomUUID(),
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation = 0,
+    parentId,
+    frameId,
+    layoutItem,
+    layout,
+    fills,
+    strokes,
+    r1,
+    r2,
+    r3,
+    r4,
+  } = params
   return {
     id,
     type: 'frame',
@@ -109,12 +316,11 @@ export function frame(
     y,
     width,
     height,
-    rotation: 0,
+    rotation,
     'parent-id': parentId,
     'frame-id': frameId,
-    ...selrectAndPoints({ x, y, width, height }),
-    transform: IDENTITY_MATRIX,
-    'transform-inverse': IDENTITY_MATRIX,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
     fills: fills ?? [{ 'fill-color': '#FFFFFF', 'fill-opacity': 1 }],
     strokes: strokes ?? [],
     r1: r1 ?? 0,
@@ -123,6 +329,8 @@ export function frame(
     r4: r4 ?? 0,
     shapes: [],
     'hide-fill-on-export': false,
+    ...layoutAttrs(layout),
+    ...layoutItemAttrs(layoutItem),
   }
 }
 
@@ -142,8 +350,10 @@ export function text(
     y,
     width,
     height,
+    rotation = 0,
     parentId,
     frameId,
+    layoutItem,
     characters,
     fontFamily = 'Inter',
     fontSize = '14',
@@ -161,14 +371,14 @@ export function text(
     y,
     width,
     height,
-    rotation: 0,
+    rotation,
     'parent-id': parentId,
     'frame-id': frameId,
-    ...selrectAndPoints({ x, y, width, height }),
-    transform: IDENTITY_MATRIX,
-    'transform-inverse': IDENTITY_MATRIX,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
     fills,
     'grow-type': 'auto-width',
+    ...layoutItemAttrs(layoutItem),
     content: {
       type: 'root',
       children: [
@@ -223,4 +433,217 @@ export type AddPageChange = { type: 'add-page'; id: string; name: string }
 
 export function addPage(name: string, id: string = randomUUID()): AddPageChange {
   return { type: 'add-page', id, name }
+}
+
+/**
+ * Attributes that mark a shape object as the main instance (root) of a component,
+ * verified against a live instance: only the root shape of the main-instance tree
+ * carries `component-id`/`component-file`/`component-root`/`main-instance` — its
+ * descendants (if any) are plain shapes, no different from a non-component tree.
+ *
+ * When `variant` is given, also tags the shape as belonging to a variant group:
+ * `variant-id` (the group's id — see the important note on `variantContainerAttrs`
+ * about what this id must be) and `variant-name` (this variant's display label,
+ * e.g. "Primary" — the shape-level field is just a label; the structured
+ * property/value pairs live on the component's `add-component` entry instead, see
+ * `addComponent`). Verified end-to-end against a live instance: after building a
+ * group this way, `container.variants.properties`/`variantComponents()` and
+ * `instance.switchVariant(pos, value)` all behave exactly as they do for a group
+ * built through Penpot's own plugin API (`createVariantFromComponents`).
+ */
+export function componentRootAttrs(
+  componentId: string,
+  fileId: string,
+  variant?: { variantId: string; name: string },
+): Record<string, unknown> {
+  return {
+    'component-id': componentId,
+    'component-file': fileId,
+    'component-root': true,
+    'main-instance': true,
+    ...(variant ? { 'variant-id': variant.variantId, 'variant-name': variant.name } : {}),
+  }
+}
+
+export type VariantProperty = { name: string; value: string }
+
+export type AddComponentChange = {
+  type: 'add-component'
+  id: string
+  name: string
+  path: string
+  'main-instance-id': string
+  'main-instance-page': string
+  'variant-id'?: string
+  'variant-properties'?: VariantProperty[]
+}
+
+/**
+ * Registers a shape tree (already added via `add-obj`) as a component in the file's
+ * components map. When `variant` is given, also records this component's
+ * `variant-id` (shared across the group) and `variant-properties` (this component's
+ * own name/value pairs, e.g. `[{ name: "Type", value: "Primary" }]`) — verified live:
+ * these are accepted and persisted on the components-map entry, independently of the
+ * shape-level `variant-name` set via `componentRootAttrs`.
+ */
+export function addComponent(
+  componentId: string,
+  name: string,
+  mainInstanceId: string,
+  mainInstancePage: string,
+  path: string = '',
+  variant?: { variantId: string; properties: VariantProperty[] },
+): AddComponentChange {
+  return {
+    type: 'add-component',
+    id: componentId,
+    name,
+    path,
+    'main-instance-id': mainInstanceId,
+    'main-instance-page': mainInstancePage,
+    ...(variant ? { 'variant-id': variant.variantId, 'variant-properties': variant.properties } : {}),
+  }
+}
+
+/**
+ * Attributes for the `frame` that physically groups a variant group's main
+ * instances (Penpot's `VariantContainer`, verified live: `is-variant-container`
+ * and `variant-id` on a `frame` shape). Its `shapes` array must list every main
+ * instance's id, and each of those main instances' `parent-id`/`frame-id` must
+ * point at this container — set both at `add-obj` time, since reparenting an
+ * already-created shape via `mov-objects` was tested and found not to work
+ * through this RPC surface (the change is accepted but silently has no effect).
+ *
+ * IMPORTANT, found only by diffing against a group built through Penpot's own
+ * plugin API: `variantId` must be the container shape's OWN id, not an
+ * independently generated id. A group built with a separate variant-id round-trips
+ * through the RPC schema without error, but the editor then can't resolve the
+ * group — `Variants.properties` and `variantComponents()` silently come back
+ * empty, so the swap UI has nothing to show. Always call this as
+ * `variantContainerAttrs(containerId)`.
+ */
+export function variantContainerAttrs(variantId: string): Record<string, unknown> {
+  return {
+    'is-variant-container': true,
+    'variant-id': variantId,
+  }
+}
+
+/**
+ * A plain shape tree node, as read back from `get-file` (camelCase) — the minimum
+ * shape needed to clone a main-instance tree into a new component instance/copy.
+ */
+export type ShapeNode = {
+  id: string
+  type: string
+  shapes?: string[]
+} & Record<string, unknown>
+
+/**
+ * Deep-clones a main-instance shape tree (root + descendants, looked up by id in
+ * `objects`) into a fresh copy with new ids, offset by `(dx, dy)`, parented under
+ * `parentId`/`frameId`. Every cloned node gets `shape-ref` pointing at its main-tree
+ * counterpart (verified live: this applies to every node, root included); only the
+ * root of the copy additionally gets `component-id`/`component-file` so Penpot
+ * recognizes the copy as a component instance. Returns one `add-obj` change per
+ * cloned node, in parent-before-child order.
+ */
+export function cloneComponentInstance(params: {
+  pageId: string
+  objects: Record<string, ShapeNode>
+  mainRootId: string
+  componentId: string
+  componentFileId: string
+  parentId: string
+  frameId: string
+  dx: number
+  dy: number
+}): AddObjChange[] {
+  const { pageId, objects, mainRootId, componentId, componentFileId, parentId, frameId, dx, dy } = params
+  const changes: AddObjChange[] = []
+
+  function cloneNode(
+    mainId: string,
+    newParentId: string,
+    newFrameId: string,
+    isRoot: boolean,
+    newId: string = randomUUID(),
+  ): string {
+    const main = objects[mainId]
+    if (!main) throw new Error(`Main instance shape ${mainId} not found in file`)
+
+    const obj: Record<string, unknown> = {
+      ...main,
+      id: newId,
+      x: (main.x as number) + dx,
+      y: (main.y as number) + dy,
+      'parent-id': newParentId,
+      'frame-id': newFrameId,
+      'shape-ref': mainId,
+    }
+    // Drop camelCase duplicates from the source (get-file returns camelCase; add-obj needs kebab-case).
+    delete obj.parentId
+    delete obj.frameId
+    delete obj.transformInverse
+    delete obj['transform-inverse']
+    delete obj.shapeRef
+    delete obj.componentId
+    delete obj.componentFile
+    delete obj.componentRoot
+    delete obj.mainInstance
+
+    // Rotation matrices are pivot-relative; a pure translation shifts the pivot by (dx, dy)
+    // while the rotation part (a, b, c, d) is unchanged.
+    const transform = (main.transform as Matrix) ?? IDENTITY_MATRIX
+    const transformInverse = (main.transformInverse as Matrix) ?? (main['transform-inverse'] as Matrix) ?? IDENTITY_MATRIX
+    obj.transform = { ...transform, e: transform.e + dx, f: transform.f + dy }
+    obj['transform-inverse'] = { ...transformInverse, e: transformInverse.e - dx, f: transformInverse.f - dy }
+
+    if (isRoot) {
+      obj['component-id'] = componentId
+      obj['component-file'] = componentFileId
+    } else {
+      obj['component-root'] = false
+      delete obj['main-instance']
+    }
+
+    const selrect = main.selrect as Rect & { x1: number; y1: number; x2: number; y2: number }
+    obj.selrect = {
+      x: selrect.x1 + dx,
+      y: selrect.y1 + dy,
+      width: selrect.width,
+      height: selrect.height,
+      x1: selrect.x1 + dx,
+      y1: selrect.y1 + dy,
+      x2: selrect.x2 + dx,
+      y2: selrect.y2 + dy,
+    }
+    const points = (main.points as Point[]) ?? []
+    obj.points = points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+
+    const childIds = main.shapes ?? []
+    const isFrame = main.type === 'frame'
+    // Pre-compute the children's new ids so `obj.shapes` is correct, but don't recurse into
+    // them (i.e. don't push their add-obj changes) until after this node's own change is
+    // pushed, so `changes` comes out parent-before-child.
+    const childNewIds = childIds.map(() => randomUUID())
+    obj.shapes = childNewIds
+
+    changes.push({
+      type: 'add-obj',
+      id: newId,
+      'page-id': pageId,
+      'frame-id': newFrameId,
+      'parent-id': newParentId,
+      obj,
+    })
+
+    childIds.forEach((childId, i) => {
+      cloneNode(childId, newId, isFrame ? newId : newFrameId, false, childNewIds[i]!)
+    })
+    return newId
+  }
+
+  cloneNode(mainRootId, parentId, frameId, true)
+  return changes
 }

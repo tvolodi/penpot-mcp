@@ -129,6 +129,14 @@ export class PenpotRpcClient {
   }
 }
 
+export type FileComponent = {
+  id: string
+  name: string
+  path: string
+  mainInstanceId: string
+  mainInstancePage: string
+}
+
 export type FileSummary = {
   id: string
   revn: number
@@ -137,6 +145,7 @@ export type FileSummary = {
   data: {
     pages: string[]
     pagesIndex: Record<string, { id: string; name: string; objects: Record<string, unknown> }>
+    components?: Record<string, FileComponent>
   }
 }
 
