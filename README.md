@@ -155,13 +155,17 @@ Two suites, split because they need very different things:
 - **Unit** (`npm test`) — pure functions in `shape-builders.ts` (rotation
   matrix math, layout attribute mapping, the camelCase-in/kebab-case-out
   shape extraction `penpot_update_shapes` relies on). No network, no Penpot
-  account, runs anywhere.
+  account, runs anywhere. This is the suite CI runs on every push/PR.
 - **Integration** (`npm run test:integration`) — exercises the actual MCP
   tool handlers against a real Penpot instance via `PENPOT_BASE_URL`/
   `PENPOT_ACCESS_TOKEN` (reads `.env`, same as the server itself). Each
   test creates its own scratch project and deletes it in a `finally` block,
   even on failure — see `test/integration/helpers/scratch-project.ts`.
-  Skips itself (doesn't fail) if credentials aren't configured.
+  Skips itself (doesn't fail) if credentials aren't configured. **Local/
+  manual only — deliberately not run in CI**, since it mutates a real
+  Penpot account and CI credentials for that are out of scope for this
+  project. Run it yourself before trusting a change to Penpot's wire
+  schema (rotation, layout, components, variants).
 
 This split matters because Penpot's RPC schema accepting a change is not
 the same as Penpot's editor correctly rendering or recognizing it — the
