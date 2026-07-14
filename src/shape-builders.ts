@@ -408,6 +408,100 @@ export function text(
   }
 }
 
+/**
+ * The subset of a shape's own fields (geometry, name, fills, strokes, corner radii,
+ * text content/font) that `updateShapeFields` round-trips through the `rect`/
+ * `frame`/`text` builders. Deliberately narrower than every attribute a shape can
+ * carry (e.g. layout/layoutItem/component/variant tags are left untouched, not
+ * read back and reapplied) — those are set once at creation and rarely need
+ * hand-editing after the fact, and extracting them correctly would mean hand-
+ * mapping camelCase field names Penpot has never been confirmed to return in a
+ * form matching the builders' inputs.
+ */
+export type EditableShapeFields = {
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  fills?: Fill[]
+  strokes?: Stroke[]
+  r1?: number
+  r2?: number
+  r3?: number
+  r4?: number
+  characters?: string
+  fontFamily?: string
+  fontSize?: string
+  fontWeight?: string
+}
+
+/**
+ * Reads a shape object back from `get-file` (camelCase) into the field shape the
+ * `rect`/`frame`/`text` builders expect (kebab-case keys), for the editable-field
+ * subset above. `fills`/`strokes` are read from their camelCase inner keys
+ * (`fillColor`/`fillOpacity`, `strokeColor`/etc.) — verified live against a real
+ * instance's `get-file` response during the components/variants investigation.
+ * Text content is read from the first paragraph/leaf of `content`, matching the
+ * single-paragraph structure `text()` always produces; a shape with richer
+ * multi-paragraph content (e.g. hand-edited in the Penpot UI) will only have its
+ * first paragraph's text/font reflected here.
+ */
+export function extractEditableFields(shape: ShapeNode): EditableShapeFields {
+  const fillsRaw = (shape.fills as Array<{ fillColor: string; fillOpacity: number }> | undefined) ?? []
+  const fills: Fill[] | undefined =
+    fillsRaw.length > 0
+      ? fillsRaw.map((f) => ({ 'fill-color': f.fillColor, 'fill-opacity': f.fillOpacity }))
+      : undefined
+
+  const strokesRaw =
+    (shape.strokes as
+      | Array<{
+          strokeColor: string
+          strokeOpacity: number
+          strokeWidth: number
+          strokeStyle: Stroke['stroke-style']
+          strokeAlignment: Stroke['stroke-alignment']
+        }>
+      | undefined) ?? []
+  const strokes: Stroke[] | undefined =
+    strokesRaw.length > 0
+      ? strokesRaw.map((s) => ({
+          'stroke-color': s.strokeColor,
+          'stroke-opacity': s.strokeOpacity,
+          'stroke-width': s.strokeWidth,
+          'stroke-style': s.strokeStyle,
+          'stroke-alignment': s.strokeAlignment,
+        }))
+      : undefined
+
+  const content = shape.content as
+    | { children?: Array<{ children?: Array<{ children?: Array<{ text?: string }>; fontFamily?: string; fontSize?: string; fontWeight?: string }> }> }
+    | undefined
+  const paragraph = content?.children?.[0]?.children?.[0]
+  const leaf = paragraph?.children?.[0]
+
+  return {
+    name: shape.name as string,
+    x: shape.x as number,
+    y: shape.y as number,
+    width: shape.width as number,
+    height: shape.height as number,
+    rotation: (shape.rotation as number) ?? 0,
+    fills,
+    strokes,
+    r1: shape.r1 as number | undefined,
+    r2: shape.r2 as number | undefined,
+    r3: shape.r3 as number | undefined,
+    r4: shape.r4 as number | undefined,
+    characters: leaf?.text,
+    fontFamily: paragraph?.fontFamily,
+    fontSize: paragraph?.fontSize,
+    fontWeight: paragraph?.fontWeight,
+  }
+}
+
 export type AddObjChange = {
   type: 'add-obj'
   id: string

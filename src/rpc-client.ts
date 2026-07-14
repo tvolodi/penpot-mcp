@@ -135,6 +135,8 @@ export type FileComponent = {
   path: string
   mainInstanceId: string
   mainInstancePage: string
+  variantId?: string
+  variantProperties?: Array<{ name: string; value: string }>
 }
 
 export type FileSummary = {

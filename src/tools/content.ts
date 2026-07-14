@@ -18,6 +18,7 @@ import {
   addPage,
   cloneComponentInstance,
   componentRootAttrs,
+  extractEditableFields,
   frame,
   rect,
   text,
@@ -295,6 +296,130 @@ function makeAddShapes(defaultTokensPath: string): ToolDefinition<z.infer<Return
   }
 }
 
+const shapePatchSchema = z.object({
+  shapeId: z.string().min(1),
+  name: z.string().min(1).optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  rotation: z.number().optional(),
+  fillColor: colorValueSchema.optional(),
+  fillOpacity: z.number().min(0).max(1).optional(),
+  stroke: strokeSchema.optional(),
+  /** Removes all strokes from the shape. Ignored if `stroke` is also given. */
+  clearStroke: z.boolean().optional(),
+  ...cornerRadiiSchema.shape,
+  /** Text shapes only: replaces the shape's text content/font. Ignored for rect/frame. */
+  characters: z.string().optional(),
+  fontFamily: z.string().optional(),
+  fontSize: z.string().optional(),
+  fontWeight: z.string().optional(),
+})
+
+function makeUpdateShapesInput(tokensPath: string) {
+  return z.object({
+    fileId: z.string().min(1),
+    pageId: z.string().min(1),
+    patches: z.array(shapePatchSchema).min(1),
+    tokensPath: z.string().default(tokensPath),
+  })
+}
+
+function makeUpdateShapes(defaultTokensPath: string): ToolDefinition<z.infer<ReturnType<typeof makeUpdateShapesInput>>> {
+  return {
+    name: 'penpot_update_shapes',
+    description:
+      'Update one or more existing shapes (rect, frame, or text) in place, by id. Only the fields you pass are ' +
+      'changed — everything else on the shape (position of children, component/variant tags, layout, etc.) is ' +
+      'left untouched. Geometry fields (x/y/width/height/rotation) automatically recompute the shape\'s ' +
+      'selection box and transform, so partial geometry edits stay consistent. Colors accept either a literal ' +
+      'hex string or a { token: "name" } reference. Note: layout/layoutItem cannot be changed via this tool — ' +
+      'only settable at creation time via penpot_add_shapes.',
+    inputSchema: makeUpdateShapesInput(defaultTokensPath),
+    handler: async (client, { fileId, pageId, patches, tokensPath }) => {
+      const tokens = await loadTokenFile(tokensPath)
+      const file = await client.getFile(fileId)
+      const page = file.data.pagesIndex[pageId]
+      if (!page) throw new Error(`penpot_update_shapes: page ${pageId} not found in file ${fileId}`)
+
+      const changes = patches.map((patch) => {
+        const existing = page.objects[patch.shapeId] as ShapeNode | undefined
+        if (!existing) {
+          throw new Error(`penpot_update_shapes: shape ${patch.shapeId} not found on page ${pageId}`)
+        }
+        const current = extractEditableFields(existing)
+
+        const mergedFields = {
+          id: patch.shapeId,
+          name: patch.name ?? current.name,
+          x: patch.x ?? current.x,
+          y: patch.y ?? current.y,
+          width: patch.width ?? current.width,
+          height: patch.height ?? current.height,
+          rotation: patch.rotation ?? current.rotation,
+          parentId: existing.parentId as string,
+          frameId: existing.frameId as string,
+          fills:
+            patch.fillColor !== undefined
+              ? [{ 'fill-color': resolveColor(patch.fillColor, tokens), 'fill-opacity': patch.fillOpacity ?? 1 }]
+              : current.fills,
+          strokes: patch.stroke
+            ? resolveStroke(patch.stroke, tokens)
+            : patch.clearStroke
+              ? []
+              : current.strokes,
+          r1: patch.r1 ?? current.r1,
+          r2: patch.r2 ?? current.r2,
+          r3: patch.r3 ?? current.r3,
+          r4: patch.r4 ?? current.r4,
+        }
+
+        let obj: Record<string, unknown>
+        if (existing.type === 'frame') {
+          obj = frame(mergedFields)
+          obj.shapes = existing.shapes ?? []
+        } else if (existing.type === 'text') {
+          obj = text({
+            ...mergedFields,
+            characters: patch.characters ?? current.characters ?? '',
+            fontFamily: patch.fontFamily ?? current.fontFamily,
+            fontSize: patch.fontSize ?? current.fontSize,
+            fontWeight: patch.fontWeight ?? current.fontWeight,
+          })
+        } else if (existing.type === 'rect') {
+          obj = rect(mergedFields)
+        } else {
+          throw new Error(
+            `penpot_update_shapes: shape ${patch.shapeId} has type "${existing.type}", which this tool doesn't ` +
+              'support updating (only rect/frame/text).',
+          )
+        }
+
+        // Carry forward attributes this tool doesn't know how to round-trip (layout, layoutItem,
+        // component/variant tags, shape-ref, etc.) by starting from the existing object and
+        // overlaying the freshly rebuilt fields. `existing` is camelCase (as returned by get-file)
+        // while `obj` is kebab-case (as add-obj expects) — an object spread doesn't "overwrite" a
+        // camelCase key with its kebab-case counterpart since they're different property names, so
+        // every TOP-LEVEL field `obj` recomputed must have its stale camelCase twin deleted explicitly
+        // (same pattern as `cloneComponentInstance`). Nested keys (fillColor/strokeColor/etc. inside
+        // fills/strokes array elements) aren't top-level shape keys, so there's no stale twin to strip —
+        // `obj.fills`/`obj.strokes` fully replace `existing.fills`/`existing.strokes` via the spread.
+        const merged: Record<string, unknown> = { ...existing, ...obj }
+        delete merged.parentId
+        delete merged.frameId
+        delete merged.transformInverse
+        delete merged.hideFillOnExport
+        delete merged.growType
+        return addObj(pageId, merged)
+      })
+
+      const result = await client.updateFile(fileId, file.revn, file.vern, changes)
+      return { shapeIds: changes.map((c) => c.id), revn: result.revn }
+    },
+  }
+}
+
 const loadTokenConfigInput = z.object({ tokensPath: z.string() })
 
 function makeLoadTokenConfig(defaultTokensPath: string): ToolDefinition<z.infer<typeof loadTokenConfigInput>> {
@@ -549,6 +674,7 @@ export function contentTools(defaultTokensPath: string) {
   return [
     createPage,
     makeAddShapes(defaultTokensPath),
+    makeUpdateShapes(defaultTokensPath),
     makeLoadTokenConfig(defaultTokensPath),
     makeCreateComponent(defaultTokensPath),
     makeAddComponentInstance(),
