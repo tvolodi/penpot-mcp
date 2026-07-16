@@ -148,6 +148,15 @@ export class PenpotRpcClient {
     return (await this.call('get-file', 'GET', { id: fileId })) as FileSummary
   }
 
+  /**
+   * Returns metadata for all library files (direct and transitive) linked to
+   * `fileId`. Does NOT include the library file's shape/component data — call
+   * `getFile(entry.id)` for each entry to retrieve components and page objects.
+   */
+  async getFileLibraries(fileId: string): Promise<FileLibraryEntry[]> {
+    return (await this.call('get-file-libraries', 'GET', { 'file-id': fileId })) as FileLibraryEntry[]
+  }
+
   async updateFile(
     fileId: string,
     revn: number,
@@ -228,6 +237,61 @@ export class PenpotRpcClient {
     if (name) params['name'] = name
     return this.call('create-file-media-object-from-url', 'POST', params) as Promise<MediaObject>
   }
+
+  // --- Comments ---
+
+  getCommentThreads(fileId: string): Promise<CommentThread[]> {
+    return this.call('get-comment-threads', 'GET', { 'file-id': fileId }) as Promise<CommentThread[]>
+  }
+
+  getCommentThread(fileId: string, threadId: string): Promise<CommentThread> {
+    return this.call('get-comment-thread', 'GET', { 'file-id': fileId, id: threadId }) as Promise<CommentThread>
+  }
+
+  createCommentThread(
+    fileId: string,
+    pageId: string,
+    position: { x: number; y: number },
+    content: string,
+    frameId?: string,
+  ): Promise<CommentThread> {
+    const params: Record<string, unknown> = {
+      'file-id': fileId,
+      'page-id': pageId,
+      position,
+      content,
+    }
+    if (frameId) params['frame-id'] = frameId
+    return this.call('create-comment-thread', 'POST', params) as Promise<CommentThread>
+  }
+
+  async updateCommentThread(threadId: string, isResolved: boolean): Promise<{ updated: string; isResolved: boolean }> {
+    await this.call('update-comment-thread', 'POST', { id: threadId, 'is-resolved': isResolved })
+    return { updated: threadId, isResolved }
+  }
+
+  async deleteCommentThread(threadId: string): Promise<{ deleted: string }> {
+    await this.call('delete-comment-thread', 'POST', { id: threadId })
+    return { deleted: threadId }
+  }
+
+  getComments(threadId: string): Promise<Comment[]> {
+    return this.call('get-comments', 'GET', { 'thread-id': threadId }) as Promise<Comment[]>
+  }
+
+  createComment(threadId: string, content: string): Promise<Comment> {
+    return this.call('create-comment', 'POST', { 'thread-id': threadId, content }) as Promise<Comment>
+  }
+
+  async updateComment(commentId: string, content: string): Promise<{ updated: string }> {
+    await this.call('update-comment', 'POST', { id: commentId, content })
+    return { updated: commentId }
+  }
+
+  async deleteComment(commentId: string): Promise<{ deleted: string }> {
+    await this.call('delete-comment', 'POST', { id: commentId })
+    return { deleted: commentId }
+  }
 }
 
 /**
@@ -252,6 +316,21 @@ export type FileComponent = {
   mainInstancePage: string
   variantId?: string
   variantProperties?: Array<{ name: string; value: string }>
+}
+
+/**
+ * Metadata about a file that is linked as a shared library to another file.
+ * Returned by `get-file-libraries`; does NOT include the file's shape/component
+ * data — call `getFile(id)` to get the full data for a specific library.
+ */
+export type FileLibraryEntry = {
+  id: string
+  name: string
+  revn: number
+  vern: number
+  isShared: boolean
+  /** True when this library is a transitive dependency (not directly linked). */
+  isIndirect: boolean
 }
 
 export type FontVariant = {
@@ -284,4 +363,46 @@ export type Change = Record<string, unknown>
 export type UpdateFileResult = {
   revn: number
   lagged: Array<{ id: string; revn: number; fileId: string; sessionId: string; changes: Change[] }>
+}
+
+/**
+ * A Penpot comment thread — a pinned annotation on a canvas position.
+ * Returned by `get-comment-threads` and `create-comment-thread`.
+ */
+export type CommentThread = {
+  id: string
+  pageId: string
+  fileId: string
+  projectId: string
+  ownerId: string
+  ownerFullname?: string
+  ownerEmail?: string
+  pageName?: string
+  fileName: string
+  seqn: number
+  content: string
+  participants: string[]
+  createdAt: string
+  modifiedAt: string
+  position: { x: number; y: number }
+  countUnreadComments?: number
+  countComments?: number
+  isResolved?: boolean
+  frameId?: string
+}
+
+/**
+ * A single reply comment within a `CommentThread`.
+ * Returned by `get-comments` and `create-comment`.
+ */
+export type Comment = {
+  id: string
+  threadId: string
+  fileId: string
+  ownerId: string
+  ownerFullname?: string
+  ownerEmail?: string
+  createdAt: string
+  modifiedAt: string
+  content: string
 }

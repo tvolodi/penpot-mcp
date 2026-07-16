@@ -280,6 +280,18 @@ const baseShapeFields = {
   blocked: z.boolean().optional(),
   /** Blend mode (e.g. 'normal', 'multiply', 'screen', 'overlay'). Defaults to 'normal'. */
   blendMode: z.string().optional(),
+  /**
+   * Horizontal resize constraint — how this shape behaves when its parent frame resizes.
+   * `left`/`right`: fix the distance to that edge. `leftright`: fix both sides (stretch).
+   * `center`: stay horizontally centered. `scale`: scale proportionally (default).
+   */
+  constraintsH: z.enum(['left', 'right', 'leftright', 'center', 'scale']).optional(),
+  /**
+   * Vertical resize constraint — how this shape behaves when its parent frame resizes.
+   * `top`/`bottom`: fix the distance to that edge. `topbottom`: fix both sides (stretch).
+   * `center`: stay vertically centered. `scale`: scale proportionally (default).
+   */
+  constraintsV: z.enum(['top', 'bottom', 'topbottom', 'center', 'scale']).optional(),
 }
 
 const rectShapeSchema = z.object({
@@ -434,6 +446,10 @@ const pathShapeSchema = z.object({
   blocked: z.boolean().optional(),
   /** Blend mode (e.g. 'normal', 'multiply', 'screen', 'overlay'). Defaults to 'normal'. */
   blendMode: z.string().optional(),
+  /** Horizontal resize constraint. See `baseShapeFields.constraintsH` for values. */
+  constraintsH: z.enum(['left', 'right', 'leftright', 'center', 'scale']).optional(),
+  /** Vertical resize constraint. See `baseShapeFields.constraintsV` for values. */
+  constraintsV: z.enum(['top', 'bottom', 'topbottom', 'center', 'scale']).optional(),
   /** Ordered path segments. Bounding box (x/y/width/height) is computed automatically. */
   content: z.array(pathCommandSchema).min(1),
   fillColor: colorValueSchema.optional(),
@@ -681,6 +697,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         fills: spec.fills
           ? resolveFillSpecs(spec.fills, tokens)
           : spec.fillColor
@@ -706,6 +724,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
         layout: resolveLayout(spec.layout, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         fills: spec.fills
           ? resolveFillSpecs(spec.fills, tokens)
           : spec.fillColor
@@ -730,6 +750,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         paragraphs: spec.paragraphs ? resolveParagraphsForBuilder(spec.paragraphs, tokens) : undefined,
         characters: spec.characters,
         fontFamily: spec.fontFamily,
@@ -752,6 +774,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         fills: spec.fills
           ? resolveFillSpecs(spec.fills, tokens)
           : spec.fillColor
@@ -768,6 +792,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         content: spec.content as PathCommand[],
         fills: spec.fills
           ? resolveFillSpecs(spec.fills, tokens)
@@ -789,6 +815,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         boolType: spec.boolType as BoolType,
         fills: spec.fills
           ? resolveFillSpecs(spec.fills, tokens)
@@ -810,6 +838,8 @@ function buildShapeObject(spec: ShapeSpec, tokens: TokenFile): Record<string, un
         parentId: spec.parentId,
         frameId: spec.frameId,
         layoutItem: resolveLayoutItem(spec.layoutItem, tokens),
+        constraintsH: spec.constraintsH,
+        constraintsV: spec.constraintsV,
         metadata: { id: spec.mediaId, width: spec.mediaWidth, height: spec.mediaHeight, mtype: spec.mtype },
       })
   }
@@ -996,6 +1026,18 @@ const shapePatchSchema = z.object({
   mediaHeight: z.number().int().positive().optional(),
   /** Image shapes only: MIME type of the replacement media object (e.g. "image/png"). */
   mtype: z.string().optional(),
+  /**
+   * Horizontal resize constraint — how this shape behaves when its parent frame resizes.
+   * `left`/`right`: fix the distance to that edge. `leftright`: fix both sides (stretch).
+   * `center`: stay horizontally centered. `scale`: scale proportionally.
+   */
+  constraintsH: z.enum(['left', 'right', 'leftright', 'center', 'scale']).optional(),
+  /**
+   * Vertical resize constraint — how this shape behaves when its parent frame resizes.
+   * `top`/`bottom`: fix the distance to that edge. `topbottom`: fix both sides (stretch).
+   * `center`: stay vertically centered. `scale`: scale proportionally.
+   */
+  constraintsV: z.enum(['top', 'bottom', 'topbottom', 'center', 'scale']).optional(),
   /** Frame shapes only: sets or replaces the frame's auto-layout (flex or grid). To remove layout,
    * pass null (not currently supported — create a new frame without layout instead). */
   layout: layoutSchema.optional(),
@@ -1064,6 +1106,8 @@ function buildUpdateChange(
     r3: patch.r3 !== undefined ? resolveRadius(patch.r3, tokens) : current.r3,
     r4: patch.r4 !== undefined ? resolveRadius(patch.r4, tokens) : current.r4,
     layoutItem: resolvedLayoutItem,
+    constraintsH: patch.constraintsH !== undefined ? patch.constraintsH : current.constraintsH as 'left' | 'right' | 'leftright' | 'center' | 'scale' | undefined,
+    constraintsV: patch.constraintsV !== undefined ? patch.constraintsV : current.constraintsV as 'top' | 'bottom' | 'topbottom' | 'center' | 'scale' | undefined,
   }
 
   let obj: Record<string, unknown>
@@ -1744,26 +1788,42 @@ function makeBatch(defaultTokensPath: string): ToolDefinition<z.infer<ReturnType
 
 const checkpointInput = z.object({
   fileId: z.string().min(1),
-  pageId: z.string().min(1),
+  /**
+   * When supplied, only this page is snapshotted (single-page checkpoint).
+   * When omitted, every page in the file is snapshotted (whole-file checkpoint).
+   */
+  pageId: z.string().min(1).optional(),
 })
 
 const checkpointTool: ToolDefinition<z.infer<typeof checkpointInput>> = {
   name: 'penpot_checkpoint',
   description:
-    'Snapshot every shape on a page, so a subsequent penpot_restore_checkpoint call can undo whatever ' +
+    'Snapshot shapes so a subsequent penpot_restore_checkpoint call can undo whatever ' +
     'happens between now and then — including a wrong penpot_delete_shapes call, which otherwise has no undo ' +
-    'path short of Penpot\'s own UI. Held in the MCP server\'s memory (not persisted to disk or to the Penpot ' +
-    'file itself), reusable across multiple restores, until explicitly discarded via ' +
+    'path short of Penpot\'s own UI. When pageId is supplied only that page is snapshotted; omit pageId to ' +
+    'snapshot every page in the file (whole-file checkpoint). Held in the MCP server\'s memory (not persisted ' +
+    'to disk or to the Penpot file itself), reusable across multiple restores, until explicitly discarded via ' +
     'penpot_discard_checkpoint or the server process restarts. Call this immediately before a risky ' +
     'multi-step edit; pass the returned checkpointId to penpot_restore_checkpoint to undo everything since.',
   inputSchema: checkpointInput,
   handler: async (client, { fileId, pageId }) => {
     const file = await client.getFile(fileId)
-    const page = file.data.pagesIndex[pageId]
-    if (!page) throw new Error(`penpot_checkpoint: page ${pageId} not found in file ${fileId}`)
-
-    const checkpoint = saveCheckpoint(fileId, pageId, page.objects as Record<string, ShapeNode>)
-    return { checkpointId: checkpoint.id, fileId, pageId, shapeCount: Object.keys(checkpoint.objects).length }
+    const pageIdsToSnap = pageId ? [pageId] : file.data.pages
+    const pages: Record<string, Record<string, ShapeNode>> = {}
+    for (const pid of pageIdsToSnap) {
+      const page = file.data.pagesIndex[pid]
+      if (!page) throw new Error(`penpot_checkpoint: page ${pid} not found in file ${fileId}`)
+      pages[pid] = page.objects as Record<string, ShapeNode>
+    }
+    const checkpoint = saveCheckpoint(fileId, pages, pageId)
+    const totalShapes = Object.values(pages).reduce((sum, objs) => sum + Object.keys(objs).length, 0)
+    return {
+      checkpointId: checkpoint.id,
+      fileId,
+      pageIds: Object.keys(pages),
+      pageCount: Object.keys(pages).length,
+      shapeCount: totalShapes,
+    }
   },
 }
 
@@ -1778,36 +1838,42 @@ const restoreCheckpointTool: ToolDefinition<z.infer<typeof restoreCheckpointInpu
     'the snapshot and replaying corrective changes as a single update-file call: shapes the snapshot has but ' +
     'the page no longer does are recreated verbatim, shapes the page has that the snapshot didn\'t are ' +
     'deleted, and shapes present in both are overwritten back to their snapshotted fields (geometry, fills, ' +
-    'children, layout — everything). The checkpoint itself is NOT consumed — it can be restored to again, or ' +
-    'discarded explicitly via penpot_discard_checkpoint. Throws if the checkpoint id is unknown (already ' +
-    'discarded, or the server restarted since it was taken).',
+    'children, layout — everything). When the checkpoint was taken without a pageId (whole-file checkpoint), ' +
+    'all snapshotted pages are restored in a single update-file call. The checkpoint itself is NOT consumed — ' +
+    'it can be restored to again, or discarded explicitly via penpot_discard_checkpoint. Throws if the ' +
+    'checkpoint id is unknown (already discarded, or the server restarted since it was taken).',
   inputSchema: restoreCheckpointInput,
   handler: async (client, { checkpointId }) => {
     const checkpoint = getCheckpoint(checkpointId)
     if (!checkpoint) throw new Error(`penpot_restore_checkpoint: no checkpoint ${checkpointId} found`)
 
-    const { fileId, pageId } = checkpoint
+    const { fileId } = checkpoint
     const file = await client.getFile(fileId)
-    const page = file.data.pagesIndex[pageId]
-    if (!page) throw new Error(`penpot_restore_checkpoint: page ${pageId} not found in file ${fileId}`)
-
-    const currentObjects = page.objects as Record<string, ShapeNode>
-    const snapshotObjects = checkpoint.objects
     const changes: Change[] = []
+    let totalRestored = 0
+    let totalDeleted = 0
 
-    // Recreate/overwrite every shape the snapshot knows about, in the snapshot's own
-    // iteration order — a child can be re-added before or after its parent, since
-    // add-obj only needs the parent id to already exist as of when Penpot applies the
-    // change, and the root frame (always present) satisfies that for any top-level shape.
-    // A shape whose parent was itself deleted-then-recreated is restored correctly either
-    // way, because both this shape and its parent are being (re)written to their exact
-    // snapshotted `parent-id`/`shapes` fields.
-    for (const shape of Object.values(snapshotObjects)) {
-      changes.push(restoreShapeAsAddObj(pageId, shape))
-    }
-    // Delete anything present now that the snapshot never had.
-    for (const shapeId of Object.keys(currentObjects)) {
-      if (!snapshotObjects[shapeId]) changes.push(delObj(pageId, shapeId))
+    for (const [pageId, snapshotObjects] of Object.entries(checkpoint.pages)) {
+      const page = file.data.pagesIndex[pageId]
+      if (!page) throw new Error(`penpot_restore_checkpoint: page ${pageId} not found in file ${fileId}`)
+
+      const currentObjects = page.objects as Record<string, ShapeNode>
+
+      // Recreate/overwrite every shape the snapshot knows about, in the snapshot's own
+      // iteration order — a child can be re-added before or after its parent, since
+      // add-obj only needs the parent id to already exist as of when Penpot applies the
+      // change, and the root frame (always present) satisfies that for any top-level shape.
+      for (const shape of Object.values(snapshotObjects)) {
+        changes.push(restoreShapeAsAddObj(pageId, shape))
+      }
+      // Delete anything present now that the snapshot never had.
+      for (const shapeId of Object.keys(currentObjects)) {
+        if (!snapshotObjects[shapeId]) {
+          changes.push(delObj(pageId, shapeId))
+          totalDeleted++
+        }
+      }
+      totalRestored += Object.keys(snapshotObjects).length
     }
 
     if (changes.length === 0) return { checkpointId, restoredShapeCount: 0, deletedShapeCount: 0, revn: file.revn }
@@ -1815,8 +1881,8 @@ const restoreCheckpointTool: ToolDefinition<z.infer<typeof restoreCheckpointInpu
     const result = await client.updateFile(fileId, file.revn, file.vern, changes)
     return {
       checkpointId,
-      restoredShapeCount: Object.keys(snapshotObjects).length,
-      deletedShapeCount: changes.length - Object.keys(snapshotObjects).length,
+      restoredShapeCount: totalRestored,
+      deletedShapeCount: totalDeleted,
       revn: result.revn,
     }
   },
@@ -1973,6 +2039,125 @@ const findShapes: ToolDefinition<z.infer<typeof findShapesInput>> = {
       })),
       count: matches.length,
     }
+  },
+}
+
+// ── Text search-and-replace ───────────────────────────────────────────────────
+
+/**
+ * Builds a fresh RegExp for `search`, escaping any regex metacharacters so the string
+ * is matched literally. Always uses the global flag; adds the case-insensitive flag when
+ * `caseSensitive` is false. A new instance is created on every call so callers never
+ * share regex lastIndex state.
+ */
+function makeSearchRegex(search: string, caseSensitive: boolean): RegExp {
+  const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(escaped, caseSensitive ? 'g' : 'gi')
+}
+
+const replaceTextInput = z.object({
+  fileId: z.string().min(1),
+  pageId: z.string().min(1),
+  /** The literal string to search for. Must be non-empty. */
+  search: z.string().min(1),
+  /** Replacement string. May be empty to delete all occurrences. */
+  replacement: z.string(),
+  /** When true, the search is case-sensitive. Defaults to false. */
+  caseSensitive: z.boolean().default(false),
+  /**
+   * Cap on the number of text shapes to modify. Shapes are visited in storage order
+   * (the same traversal order as penpot_find_shapes). Omit for no limit.
+   */
+  limit: z.number().int().positive().optional(),
+})
+
+const replaceText: ToolDefinition<z.infer<typeof replaceTextInput>> = {
+  name: 'penpot_replace_text',
+  description:
+    'Find and replace text across all text shapes on a page in a single update-file call. ' +
+    'Searches each text run (leaf node) of every text shape for the literal "search" string and ' +
+    'replaces every occurrence with "replacement". Matching is case-insensitive by default ' +
+    '(set caseSensitive: true to override). Replacement is per text-run: a search string that ' +
+    'spans two adjacent runs in the same paragraph will not be matched. Returns the ids and ' +
+    'names of every shape that was modified and the total number of occurrences replaced.',
+  inputSchema: replaceTextInput,
+  handler: async (client, { fileId, pageId, search, replacement, caseSensitive, limit }) => {
+    const file = await client.getFile(fileId)
+    const page = file.data.pagesIndex[pageId]
+    if (!page) throw new Error(`penpot_replace_text: page ${pageId} not found in file ${fileId}`)
+
+    const objects = page.objects as Record<string, ShapeNode>
+    const changes: ReturnType<typeof addObj>[] = []
+    const replacedShapes: Array<{ shapeId: string; name: string; occurrences: number }> = []
+
+    for (const existing of Object.values(objects)) {
+      if (existing.type !== 'text') continue
+
+      const current = extractEditableFields(existing)
+      if (!current.paragraphs || current.paragraphs.length === 0) continue
+
+      // Replace within every text run; count total occurrences.
+      let totalCount = 0
+      const modifiedParagraphs: TextParagraph[] = current.paragraphs.map((para) => ({
+        ...para,
+        ranges: para.ranges.map((range) => {
+          const hits = range.text.match(makeSearchRegex(search, caseSensitive))?.length ?? 0
+          totalCount += hits
+          if (hits === 0) return range
+          return { ...range, text: range.text.replace(makeSearchRegex(search, caseSensitive), replacement) }
+        }),
+      }))
+
+      if (totalCount === 0) continue
+
+      const parentId = (existing.parentId as string | undefined) ?? (existing['parent-id'] as string)
+      const frameId = (existing.frameId as string | undefined) ?? (existing['frame-id'] as string)
+
+      const obj = text({
+        id: existing.id as string,
+        name: current.name,
+        x: current.x,
+        y: current.y,
+        width: current.width,
+        height: current.height,
+        rotation: current.rotation,
+        parentId,
+        frameId,
+        opacity: current.opacity,
+        hidden: current.hidden,
+        blocked: current.blocked,
+        blendMode: current.blendMode,
+        constraintsH: current.constraintsH as 'left' | 'right' | 'leftright' | 'center' | 'scale' | undefined,
+        constraintsV: current.constraintsV as 'top' | 'bottom' | 'topbottom' | 'center' | 'scale' | undefined,
+        paragraphs: modifiedParagraphs,
+        growType: current.growType as 'auto-width' | 'auto-height' | 'fixed' | undefined,
+        verticalAlign: current.verticalAlign as 'top' | 'center' | 'bottom' | undefined,
+        shadows: current.shadows,
+      })
+
+      // Preserve camelCase attributes from get-file that this builder doesn't know about
+      // (component/variant tags, layout-item attrs, etc.) by merging existing on top then
+      // overlaying the freshly built kebab-case keys — same pattern as buildUpdateChange.
+      const merged: Record<string, unknown> = { ...existing, ...obj }
+      delete merged.parentId
+      delete merged.frameId
+      delete merged.transformInverse
+      delete merged.hideFillOnExport
+      delete merged.growType
+
+      changes.push(addObj(pageId, merged))
+      replacedShapes.push({ shapeId: existing.id as string, name: current.name, occurrences: totalCount })
+
+      if (limit !== undefined && replacedShapes.length >= limit) break
+    }
+
+    if (changes.length === 0) {
+      return { replacedShapes: [], totalReplacedShapes: 0, totalOccurrences: 0 }
+    }
+
+    const result = await client.updateFile(fileId, file.revn, file.vern, changes)
+    const totalOccurrences = replacedShapes.reduce((sum, s) => sum + s.occurrences, 0)
+    return { replacedShapes, totalReplacedShapes: replacedShapes.length, totalOccurrences, revn: result.revn }
   },
 }
 
@@ -2429,6 +2614,14 @@ function makeAddVariant(defaultTokensPath: string): ToolDefinition<z.infer<Retur
 
 const listComponentsInput = z.object({
   fileId: z.string().min(1),
+  includeLibraries: z
+    .boolean()
+    .default(false)
+    .describe(
+      'When true, also list components from all shared-library files that are linked to this file. ' +
+        'Each library component entry will include a libraryFileId and libraryFileName field. ' +
+        'Pass the libraryFileId to penpot_add_component_instance to place an instance of that component.',
+    ),
 })
 
 const listComponents: ToolDefinition<z.infer<typeof listComponentsInput>> = {
@@ -2437,22 +2630,48 @@ const listComponents: ToolDefinition<z.infer<typeof listComponentsInput>> = {
     "List a file's existing components (from its components map), instead of requiring the caller to have " +
     "created them itself in the same session or parse penpot_get_file_snapshot's data.components by hand. " +
     'Each entry includes the componentId (usable with penpot_add_component_instance), name, mainInstanceId/' +
-    'mainInstancePage, and — for variant components — variantId/variantProperties.',
+    'mainInstancePage, and — for variant components — variantId/variantProperties. ' +
+    'Set includeLibraries: true to also include components from connected shared-library files ' +
+    '(each library component entry will carry a libraryFileId field for use with penpot_add_component_instance).',
   inputSchema: listComponentsInput,
-  handler: async (client, { fileId }) => {
+  handler: async (client, { fileId, includeLibraries }) => {
     const file = await client.getFile(fileId)
-    const components = file.data.components ?? {}
-    return {
-      components: Object.values(components).map((c) => ({
-        componentId: c.id,
-        name: c.name,
-        path: c.path,
-        mainInstanceId: c.mainInstanceId,
-        mainInstancePage: c.mainInstancePage,
-        variantId: c.variantId,
-        variantProperties: c.variantProperties,
-      })),
+    const ownComponents = Object.values(file.data.components ?? {}).map((c) => ({
+      componentId: c.id,
+      name: c.name,
+      path: c.path,
+      mainInstanceId: c.mainInstanceId,
+      mainInstancePage: c.mainInstancePage,
+      variantId: c.variantId,
+      variantProperties: c.variantProperties,
+    }))
+
+    if (!includeLibraries) {
+      return { components: ownComponents }
     }
+
+    // Fetch library file metadata, then fetch each library's full data to access its components.
+    const libraryEntries = await client.getFileLibraries(fileId)
+    const libraryComponents = (
+      await Promise.all(
+        libraryEntries.map(async (entry) => {
+          const libFile = await client.getFile(entry.id)
+          return Object.values(libFile.data.components ?? {}).map((c) => ({
+            componentId: c.id,
+            name: c.name,
+            path: c.path,
+            mainInstanceId: c.mainInstanceId,
+            mainInstancePage: c.mainInstancePage,
+            variantId: c.variantId,
+            variantProperties: c.variantProperties,
+            libraryFileId: entry.id,
+            libraryFileName: entry.name,
+          }))
+        }),
+      )
+    ).flat()
+
+    return { components: [...ownComponents, ...libraryComponents] }
   },
 }
 
@@ -2466,6 +2685,20 @@ function makeAddComponentInstanceInput() {
     y: z.number(),
     parentId: z.string().default(ROOT_FRAME_ID),
     frameId: z.string().default(ROOT_FRAME_ID),
+    /**
+     * When the component belongs to a connected shared-library file (not the current file),
+     * supply that library file's id here. Obtain it from penpot_list_components with
+     * includeLibraries: true — each library component entry carries a `libraryFileId` field.
+     * Omit (or pass the same value as fileId) to use a component defined in the current file.
+     */
+    libraryFileId: z
+      .string()
+      .optional()
+      .describe(
+        "The id of the shared-library file that owns this component. " +
+          "Returned as libraryFileId by penpot_list_components when includeLibraries is true. " +
+          "Omit when the component belongs to the current file.",
+      ),
   })
 }
 
@@ -2473,17 +2706,29 @@ function makeAddComponentInstance(): ToolDefinition<z.infer<ReturnType<typeof ma
   return {
     name: 'penpot_add_component_instance',
     description:
-      'Place a copy (instance) of an existing component, created via penpot_create_component, at a new position ' +
-      'on a page. Clones the component\'s full main-instance shape tree with fresh ids, linked back to the main ' +
-      'via shape-ref so Penpot recognizes it as a component copy.',
+      'Place a copy (instance) of an existing component at a new position on a page. ' +
+      'Clones the component\'s full main-instance shape tree with fresh ids, linked back to the main ' +
+      'via shape-ref so Penpot recognizes it as a component copy. ' +
+      'For components from a connected shared-library file, pass the library file\'s id as libraryFileId ' +
+      '(returned by penpot_list_components with includeLibraries: true).',
     inputSchema: makeAddComponentInstanceInput(),
-    handler: async (client, { fileId, pageId, componentId, x, y, parentId, frameId }) => {
+    handler: async (client, { fileId, pageId, componentId, x, y, parentId, frameId, libraryFileId }) => {
+      // Always fetch the target file for its revn/vern (needed for update-file).
       const file = await client.getFile(fileId)
-      const component = file.data.components?.[componentId]
+
+      // Resolve the file that actually owns the component.
+      const effectiveLibraryFileId = libraryFileId && libraryFileId !== fileId ? libraryFileId : fileId
+      const componentSource = effectiveLibraryFileId === fileId ? file : await client.getFile(effectiveLibraryFileId)
+
+      const component = componentSource.data.components?.[componentId]
       if (!component) {
-        throw new Error(`penpot_add_component_instance: no component ${componentId} found in file ${fileId}`)
+        const location =
+          effectiveLibraryFileId === fileId
+            ? `file ${fileId}`
+            : `library file ${effectiveLibraryFileId}`
+        throw new Error(`penpot_add_component_instance: no component ${componentId} found in ${location}`)
       }
-      const mainPage = file.data.pagesIndex[component.mainInstancePage]
+      const mainPage = componentSource.data.pagesIndex[component.mainInstancePage]
       if (!mainPage) {
         throw new Error(
           `penpot_add_component_instance: component ${componentId}'s main-instance page ${component.mainInstancePage} not found`,
@@ -2503,7 +2748,7 @@ function makeAddComponentInstance(): ToolDefinition<z.infer<ReturnType<typeof ma
         objects: mainPage.objects as Record<string, ShapeNode>,
         mainRootId: component.mainInstanceId,
         componentId,
-        componentFileId: fileId,
+        componentFileId: effectiveLibraryFileId,
         parentId,
         frameId,
         dx,
@@ -2518,6 +2763,233 @@ function makeAddComponentInstance(): ToolDefinition<z.infer<ReturnType<typeof ma
   }
 }
 
+/**
+ * Builds an `add-obj` change that reparents an existing shape by updating its `parent-id`
+ * while carrying forward all other fields verbatim — the same `restoreShapeAsAddObj` pattern
+ * used for checkpoint restore and group/ungroup reparenting.
+ */
+function buildReparentChange(
+  pageId: string,
+  child: ShapeNode,
+  newParentId: string,
+  newFrameId: string,
+): ReturnType<typeof addObj> {
+  const merged: Record<string, unknown> = {
+    ...child,
+    'parent-id': newParentId,
+    'frame-id': newFrameId,
+    'transform-inverse': child.transformInverse ?? child['transform-inverse'],
+    'hide-fill-on-export': child.hideFillOnExport ?? child['hide-fill-on-export'] ?? false,
+  }
+  delete merged.parentId
+  delete merged.frameId
+  delete merged.transformInverse
+  delete merged.hideFillOnExport
+  delete merged.growType
+  return addObj(pageId, merged)
+}
+
+/**
+ * Builds an `add-obj` change that updates a parent shape's `shapes` array, carrying forward
+ * all other fields — the same pattern used by `buildReorderChange`.
+ */
+function buildUpdateParentShapesChange(
+  pageId: string,
+  parent: ShapeNode,
+  newShapes: string[],
+): ReturnType<typeof addObj> {
+  const parentOfParentId =
+    (parent.parentId as string | undefined) ?? (parent['parent-id'] as string | undefined) ?? ROOT_FRAME_ID
+  const parentFrameId =
+    (parent.frameId as string | undefined) ?? (parent['frame-id'] as string | undefined) ?? ROOT_FRAME_ID
+  const merged: Record<string, unknown> = {
+    ...parent,
+    shapes: newShapes,
+    'parent-id': parentOfParentId,
+    'frame-id': parentFrameId,
+    'transform-inverse': parent.transformInverse ?? parent['transform-inverse'],
+    'hide-fill-on-export': parent.hideFillOnExport ?? parent['hide-fill-on-export'] ?? false,
+  }
+  delete merged.parentId
+  delete merged.frameId
+  delete merged.transformInverse
+  delete merged.hideFillOnExport
+  delete merged.growType
+  return addObj(pageId, merged)
+}
+
+const groupShapesInput = z.object({
+  fileId: z.string().min(1),
+  pageId: z.string().min(1),
+  /** Ids of the shapes to group. All must be siblings (share the same parent) on the page. */
+  shapeIds: z.array(z.string().min(1)).min(1),
+  /** Name for the new group. Defaults to "Group". */
+  name: z.string().min(1).default('Group'),
+  /** Optional caller-chosen UUID for the new group. A random UUID is used if omitted. */
+  groupId: z.string().uuid().optional(),
+})
+
+const groupShapes: ToolDefinition<z.infer<typeof groupShapesInput>> = {
+  name: 'penpot_group_shapes',
+  description:
+    'Group one or more existing sibling shapes into a new group, matching Penpot\'s own Ctrl+G behavior. ' +
+    'All supplied shapeIds must share the same parent on the page. The new group is inserted into the parent ' +
+    'at the z-order position of the topmost selected shape; the grouped shapes become the group\'s children ' +
+    'and keep their existing absolute canvas positions. Returns the new groupId and the parent\'s updated ' +
+    'shapes order. Use penpot_ungroup_shapes to reverse this operation.',
+  inputSchema: groupShapesInput,
+  handler: async (client, { fileId, pageId, shapeIds, name, groupId: suppliedGroupId }) => {
+    const file = await client.getFile(fileId)
+    const page = file.data.pagesIndex[pageId]
+    if (!page) throw new Error(`penpot_group_shapes: page ${pageId} not found in file ${fileId}`)
+
+    const objects = page.objects as Record<string, ShapeNode>
+
+    for (const shapeId of shapeIds) {
+      if (!objects[shapeId]) {
+        throw new Error(`penpot_group_shapes: shape ${shapeId} not found on page ${pageId}`)
+      }
+    }
+
+    const firstShape = objects[shapeIds[0]!]!
+    const sharedParentId = (firstShape.parentId as string | undefined) ?? (firstShape['parent-id'] as string)
+    const sharedFrameId = (firstShape.frameId as string | undefined) ?? (firstShape['frame-id'] as string)
+
+    for (const shapeId of shapeIds.slice(1)) {
+      const shape = objects[shapeId]!
+      const parentId = (shape.parentId as string | undefined) ?? (shape['parent-id'] as string)
+      if (parentId !== sharedParentId) {
+        throw new Error(
+          `penpot_group_shapes: all shapes must share the same parent; shape ${shapeId} has parent ${parentId}, expected ${sharedParentId}`,
+        )
+      }
+    }
+
+    const parent = objects[sharedParentId]
+    if (!parent) throw new Error(`penpot_group_shapes: parent ${sharedParentId} not found`)
+
+    // Compute the union bounding box of all selected shapes from their selrects.
+    const boxes = shapeIds.map((id) => {
+      const shape = objects[id]!
+      const selrect = shape.selrect as { x1?: number; y1?: number; x2?: number; y2?: number } | undefined
+      if (
+        selrect?.x1 !== undefined &&
+        selrect.y1 !== undefined &&
+        selrect.x2 !== undefined &&
+        selrect.y2 !== undefined
+      ) {
+        return { x1: selrect.x1, y1: selrect.y1, x2: selrect.x2, y2: selrect.y2 }
+      }
+      const x = shape.x as number
+      const y = shape.y as number
+      const w = shape.width as number
+      const h = shape.height as number
+      return { x1: x, y1: y, x2: x + w, y2: y + h }
+    })
+    const gx1 = Math.min(...boxes.map((b) => b.x1))
+    const gy1 = Math.min(...boxes.map((b) => b.y1))
+    const gx2 = Math.max(...boxes.map((b) => b.x2))
+    const gy2 = Math.max(...boxes.map((b) => b.y2))
+
+    const groupId = suppliedGroupId ?? randomUUID()
+
+    // Preserve the children's existing z-order from the parent's shapes list.
+    const parentShapes = parent.shapes ?? []
+    const childrenInZOrder = parentShapes.filter((id) => shapeIds.includes(id))
+
+    // Build the group object.
+    const groupObj = group({
+      id: groupId,
+      name,
+      x: gx1,
+      y: gy1,
+      width: gx2 - gx1,
+      height: gy2 - gy1,
+      parentId: sharedParentId,
+      frameId: sharedFrameId,
+      shapes: childrenInZOrder,
+    })
+
+    // Insert the group at the position of the lowest-indexed selected shape in the parent.
+    const firstChildIndex = Math.min(
+      ...shapeIds.map((id) => parentShapes.indexOf(id)).filter((i) => i !== -1),
+    )
+    const newParentShapes = parentShapes.filter((id) => !shapeIds.includes(id))
+    newParentShapes.splice(firstChildIndex, 0, groupId)
+
+    const changes: Change[] = [
+      addObj(pageId, groupObj),
+      ...childrenInZOrder.map((childId) =>
+        buildReparentChange(pageId, objects[childId]!, groupId, sharedFrameId),
+      ),
+      buildUpdateParentShapesChange(pageId, parent, newParentShapes),
+    ]
+
+    const result = await client.updateFile(fileId, file.revn, file.vern, changes)
+    return { groupId, childIds: childrenInZOrder, parentId: sharedParentId, revn: result.revn }
+  },
+}
+
+const ungroupShapesInput = z.object({
+  fileId: z.string().min(1),
+  pageId: z.string().min(1),
+  /** Id of the group shape to dissolve. Must be a shape of type "group". */
+  groupId: z.string().min(1),
+})
+
+const ungroupShapes: ToolDefinition<z.infer<typeof ungroupShapesInput>> = {
+  name: 'penpot_ungroup_shapes',
+  description:
+    'Dissolve a group, returning its children to the group\'s parent at the group\'s z-order position — ' +
+    'matching Penpot\'s own Ctrl+Shift+G / "Ungroup" behavior. The supplied groupId must refer to a shape of ' +
+    'type "group". After ungrouping, each former child keeps its absolute canvas position and gets the ' +
+    'group\'s parent and frame as its new parent. The group shape itself is deleted. Returns the ids of ' +
+    'the released children and the parent\'s updated shapes order.',
+  inputSchema: ungroupShapesInput,
+  handler: async (client, { fileId, pageId, groupId }) => {
+    const file = await client.getFile(fileId)
+    const page = file.data.pagesIndex[pageId]
+    if (!page) throw new Error(`penpot_ungroup_shapes: page ${pageId} not found in file ${fileId}`)
+
+    const objects = page.objects as Record<string, ShapeNode>
+    const groupShape = objects[groupId] as ShapeNode | undefined
+    if (!groupShape) throw new Error(`penpot_ungroup_shapes: shape ${groupId} not found on page ${pageId}`)
+    if (groupShape.type !== 'group') {
+      throw new Error(`penpot_ungroup_shapes: shape ${groupId} is not a group (type: ${groupShape.type})`)
+    }
+
+    const newParentId = (groupShape.parentId as string | undefined) ?? (groupShape['parent-id'] as string)
+    const newFrameId = (groupShape.frameId as string | undefined) ?? (groupShape['frame-id'] as string)
+
+    const parent = objects[newParentId]
+    if (!parent) throw new Error(`penpot_ungroup_shapes: parent ${newParentId} not found`)
+
+    const childIds = groupShape.shapes ?? []
+
+    // Replace the group id in the parent's shapes list with the group's children (preserving their z-order).
+    const parentShapes = parent.shapes ?? []
+    const groupIndex = parentShapes.indexOf(groupId)
+    const newParentShapes = [
+      ...parentShapes.slice(0, groupIndex),
+      ...childIds,
+      ...parentShapes.slice(groupIndex + 1),
+    ]
+
+    const changes: Change[] = [
+      ...childIds.map((childId) => {
+        const child = objects[childId] as ShapeNode | undefined
+        if (!child) throw new Error(`penpot_ungroup_shapes: child ${childId} not found on page`)
+        return buildReparentChange(pageId, child, newParentId, newFrameId)
+      }),
+      buildUpdateParentShapesChange(pageId, parent, newParentShapes),
+      delObj(pageId, groupId),
+    ]
+
+    const result = await client.updateFile(fileId, file.revn, file.vern, changes)
+    return { ungroupedShapeIds: childIds, parentId: newParentId, revn: result.revn }
+  },
+}
+
 export function contentTools(defaultTokensPath: string) {
   return [
     createPage,
@@ -2528,6 +3000,8 @@ export function contentTools(defaultTokensPath: string) {
     makeUpdateShapes(defaultTokensPath),
     deleteShapes,
     cloneShapes,
+    groupShapes,
+    ungroupShapes,
     reorderShapes,
     makeAlignShapes(defaultTokensPath),
     makeDistributeShapes(defaultTokensPath),
@@ -2537,6 +3011,7 @@ export function contentTools(defaultTokensPath: string) {
     discardCheckpointTool,
     getShape,
     findShapes,
+    replaceText,
     uploadMediaTool,
     measureTextTool,
     makeLoadTokenConfig(defaultTokensPath),

@@ -18,6 +18,7 @@ import { PenpotRpcClient, PenpotRpcError } from './rpc-client.js'
 import { PenpotExporterClient } from './exporter-client.js'
 import { projectFileTools, type ToolDefinition } from './tools/project-files.js'
 import { contentTools } from './tools/content.js'
+import { commentTools } from './tools/comments.js'
 import { registerExportTool } from './tools/export.js'
 
 function registerTools(server: McpServer, client: PenpotRpcClient, tools: ToolDefinition<any>[]): void {
@@ -60,6 +61,7 @@ async function main(): Promise<void> {
 
   registerTools(server, client, projectFileTools)
   registerTools(server, client, contentTools(config.PENPOT_TOKENS_PATH))
+  registerTools(server, client, commentTools)
 
   // Register penpot_export_shape if any auth mode for the exporter is configured.
   // PENPOT_LOGIN_EMAIL/PASSWORD (password login) takes precedence over

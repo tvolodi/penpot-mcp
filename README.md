@@ -33,6 +33,13 @@ another project.
 - Shape deletion: `penpot_delete_shapes` removes one or more existing
   shapes from a page by id. Deleting a frame or group also removes its
   children, matching Penpot's own delete behavior.
+- Shape grouping: `penpot_group_shapes` wraps one or more sibling shapes into
+  a new group (Ctrl+G equivalent) — all shapes must share the same parent.
+  The group is inserted at the topmost selected shape's z-order position and
+  its bounding box is computed from the children's rotation-aware `selrect`s.
+  `penpot_ungroup_shapes` dissolves a group (Ctrl+Shift+G equivalent):
+  children are reparented to the group's former parent at the group's
+  z-order slot, then the group is deleted.
 - Shape duplication: `penpot_clone_shapes` duplicates one or more existing
   shapes (and, for frames/groups, their full descendant subtree), each with
   fresh ids — plain shape duplication, like Penpot's own Ctrl+D, not a
@@ -66,17 +73,18 @@ another project.
   set an explicit `id` and be referenced as a later op's `parentId`/`frameId`
   or targeted by a later `update`/`delete`/`reorder` in the same call, so a
   whole form or card grid can be built in one round trip.
-- Undo point: `penpot_checkpoint` snapshots every shape on a page and returns
-  a `checkpointId`; `penpot_restore_checkpoint` undoes everything since —
-  including a wrong `penpot_delete_shapes` call, which otherwise has no undo
-  path short of Penpot's own UI. Works by diffing the page's current state
-  against the snapshot and replaying corrective changes as a single
-  `update-file` call (recreate what's missing, delete what's new, overwrite
-  what changed back to its snapshotted fields), since Penpot's RPC has no
-  "revert to revn X" primitive. Checkpoints live in the MCP server's memory
-  (not the Penpot file, not disk) and are reusable — restore to the same
-  point as many times as you like — until explicitly freed via
-  `penpot_discard_checkpoint` or the server process restarts.
+- Undo point: `penpot_checkpoint` snapshots shapes and returns a `checkpointId`;
+  `penpot_restore_checkpoint` undoes everything since — including a wrong
+  `penpot_delete_shapes` call, which otherwise has no undo path short of
+  Penpot's own UI. Supply `pageId` to scope the snapshot to a single page; omit
+  `pageId` for a whole-file checkpoint that covers every page. Works by diffing
+  current state against the snapshot and replaying corrective changes as a single
+  `update-file` call (recreate what's missing, delete what's new, overwrite what
+  changed back to its snapshotted fields), since Penpot's RPC has no "revert to
+  revn X" primitive. Checkpoints live in the MCP server's memory (not the Penpot
+  file, not disk) and are reusable — restore to the same point as many times as
+  you like — until explicitly freed via `penpot_discard_checkpoint` or the server
+  process restarts.
 - Shape lookup: `penpot_get_shape` fetches a single shape by id, without
   pulling the whole page via `penpot_get_file_snapshot`. By default nests
   the shape's full descendant subtree under `shapes`; `includeDescendants`
@@ -135,17 +143,29 @@ another project.
   Accepts a local file path (`filePath`), a remote URL (`url` — Penpot's server
   fetches it directly), or base64-encoded bytes (`dataBase64` + `mtype`). The
   returned `id` is used as `mediaId` when creating an `image` shape.
+- Comments: `penpot_list_comment_threads` lists all threads for a file;
+  `penpot_get_comments` fetches replies inside a thread;
+  `penpot_create_comment_thread` pins a new thread to a canvas position
+  (x/y, optional `frameId`); `penpot_create_comment` adds a reply;
+  `penpot_update_comment` edits a comment's text;
+  `penpot_resolve_comment_thread` marks a thread resolved or reopens it;
+  `penpot_delete_comment` removes a single reply;
+  `penpot_delete_comment_thread` removes a whole thread.
 - Reading a file's current shape tree via `penpot_get_file_snapshot`.
-- Rendering a shape or page to PNG/SVG via `penpot_export_shape` (requires
-  `PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD`, see below) — no browser tab
+- Rendering shapes or pages to PNG/SVG/PDF via `penpot_export_shape` (single shape) and
+  `penpot_export_batch` (multiple shapes in one call, returned in the same order) — requires
+  `PENPOT_LOGIN_EMAIL`/`PENPOT_LOGIN_PASSWORD` or `PENPOT_AUTH_TOKEN_COOKIE`, see below — no browser tab
   or Penpot plugin session needed on your end.
 
 ## Render/export capability
 
-`penpot_export_shape` renders a shape (or an entire page, by passing its
-root frame's id) to PNG or SVG, using Penpot's own server-side exporter —
+`penpot_export_shape` renders a single shape (or an entire page, by passing its
+root frame's id) to PNG, SVG, or PDF, using Penpot's own server-side exporter —
 the same headless-Chromium-backed service Penpot's self-hosted stack
-already runs (the `penpotapp/exporter` container). No browser automation
+already runs (the `penpotapp/exporter` container). `penpot_export_batch`
+accepts an array of `shapeIds` from the same page and returns one image per
+shape in a single API call, in the same order — all formats (PNG/SVG/PDF)
+are supported here too. No browser automation
 happens in this package; it's two HTTP calls (auth, then export) against
 your Penpot instance.
 
@@ -420,19 +440,20 @@ Ideas for further reducing agent friction, roughly in priority order:
       `parentId`/`frameId`, or be the target of a later `update`/`delete`/
       `reorder`, without an extra RPC round trip in between.)
 - [x] `penpot_checkpoint` / `penpot_restore_checkpoint` /
-      `penpot_discard_checkpoint` — snapshot a page's shapes before a risky
-      multi-step edit, and restore them after. (Done — see above. Penpot's
-      RPC has no "revert to revn X" primitive, so restore works by diffing
-      current page state against the snapshot and replaying corrective
-      `add-obj`/`del-obj` changes as a single `update-file` call, reusing
-      the same camelCase-in/kebab-case-out normalization already verified
-      live for `penpot_update_shapes`/`penpot_reorder_shapes` — see
-      `restoreShapeAsAddObj` in `shape-builders.ts`. Snapshots are held in
-      the MCP server's own memory, not written to the Penpot file or disk,
-      so a checkpoint doesn't survive a server restart; `penpot_checkpoint`
-      scopes to a whole page rather than a caller-supplied shape id list, so
-      restore can't miss a shape a multi-step edit reparented or renamed
-      into scope after the fact.)
+      `penpot_discard_checkpoint` — snapshot shapes before a risky multi-step
+      edit, and restore them after. (Done — see above. Penpot's RPC has no
+      "revert to revn X" primitive, so restore works by diffing current state
+      against the snapshot and replaying corrective `add-obj`/`del-obj` changes
+      as a single `update-file` call, reusing the same camelCase-in/kebab-case-out
+      normalization already verified live for `penpot_update_shapes`/
+      `penpot_reorder_shapes` — see `restoreShapeAsAddObj` in `shape-builders.ts`.
+      Snapshots are held in the MCP server's own memory, not written to the Penpot
+      file or disk, so a checkpoint doesn't survive a server restart.
+      `penpot_checkpoint` now accepts an optional `pageId`: supply it to scope the
+      snapshot to a single page; omit it for a whole-file checkpoint that covers
+      every page. Restore applies all pages' corrective changes in one `update-file`
+      call, so a multi-step edit that touched multiple pages is fully undone in a
+      single round trip.)
 - [x] `penpot_align_shapes` / `penpot_distribute_shapes` — the one-click
       align-left/center/distribute-evenly actions Penpot's own UI has, that
       this package doesn't. Without them, an agent has to compute pixel
@@ -593,30 +614,96 @@ Ideas for further reducing agent friction, roughly in priority order:
       back to single-paragraph. Verified field names against Penpot's
       `common/src/app/common/types/text.cljc` `text-node-attrs` /
       `paragraph-attrs` / `root-attrs`.)
-- [ ] Group/ungroup as first-class tools — `group()` already exists as an
+- [x] Group/ungroup as first-class tools — `group()` already exists as an
       internal builder, but nothing exposes grouping existing shapes or
-      ungrouping a group via an MCP tool.
-- [ ] Resize constraints — Penpot's `constraints-h`/`constraints-v`
+      ungrouping a group via an MCP tool. (Done — `penpot_group_shapes` takes
+      a `shapeIds` array of sibling shapes (all must share the same parent)
+      and wraps them in a new group at the topmost selected shape's z-order
+      position; the group's bounding box is the union of the children's
+      `selrect`s (rotation-aware bounds). `penpot_ungroup_shapes` takes a
+      `groupId` and dissolves it: each child is reparented to the group's
+      former parent at the group's z-order position (preserving relative
+      child order) and the group shape is deleted. Both are implemented as
+      single `update-file` change-sets — group creation sends `add-obj` for
+      the new group, one `add-obj` per child (to update `parent-id`) and an
+      `add-obj` for the updated parent's `shapes` array; ungroup does the
+      same in reverse then appends a `del-obj`. Requires siblings only —
+      shapes with different parents must be moved to a common parent first.)
+- [x] Resize constraints — Penpot's `constraints-h`/`constraints-v`
       (how a shape behaves when its parent resizes) are never set or
       exposed in `EditableShapeFields` or the update patch schema.
-- [ ] Batch/whole-page export — `penpot_export_shape` takes exactly one
+      (Done — `constraintsH` (`left`/`right`/`leftright`/`center`/`scale`) and
+      `constraintsV` (`top`/`bottom`/`topbottom`/`center`/`scale`) are now
+      accepted by every shape builder (`rect`, `frame`, `text`, `circle`,
+      `path`, `bool`, `group`, `image`), emitted as `constraints-h`/
+      `constraints-v` in the wire format. Both fields are settable at creation
+      time via `penpot_add_shapes` and patchable via `penpot_update_shapes`/
+      `penpot_batch`; `extractEditableFields` reads them back from `get-file`'s
+      camelCase response so a partial update patch preserves the existing
+      constraints when neither field is included in the patch.)
+- [x] Batch/whole-page export — `penpot_export_shape` takes exactly one
       `shapeId` per call, with no multi-shape or multi-page batch export,
-      and only `png`/`svg` (no PDF).
-- [ ] Shared-library components — `penpot_list_components` and
+      and only `png`/`svg` (no PDF). (Done — `penpot_export_batch` accepts
+      a `shapeIds` array (same `pageId`, any mix of `format`/`scale`) and
+      sends all specs to the Penpot exporter in a single `POST /api/export`
+      call, parsing each result's `~:uri`/`~:mtype`/`~:filename` via
+      `matchAll` on the transit+json response and downloading the assets in
+      parallel. Both `penpot_export_shape` and `penpot_export_batch` now
+      also accept `pdf` as a format value. Multi-page batch export is still
+      not implemented — pass the same tool multiple times with different
+      `pageId`s, or call `penpot_export_batch` once per page.)
+- [x] Shared-library components — `penpot_list_components` and
       `penpot_add_component_instance` only look at the current file's own
       `components` map; there's no support for pulling components from a
-      separate connected shared-library file.
-- [ ] Prototyping/interactions — no flows, overlays, or navigate-to
-      support anywhere; this package only automates static design, not
-      clickable prototypes.
-- [ ] Comments API — Penpot's comment threads are untouched by this
-      package.
-- [ ] Text search-and-replace across a file — `penpot_find_shapes` can
-      locate text shapes by content, but nothing rewrites matched text in
-      bulk.
-- [ ] Cross-page/whole-file undo — `penpot_checkpoint` and friends are
-      explicitly single-page, held in the MCP server's own memory, and
-      don't survive a restart; there's no broader undo stack.
-- [ ] Webhooks/event subscriptions and multiplayer/presence awareness —
-      no support for file-change notifications or seeing who else is
-      live-editing; conflicts are only caught via `revn`/`vern` mismatches.
+      separate connected shared-library file. (Done — `penpot_list_components`
+      now accepts `includeLibraries: true`, which calls `get-file-libraries` to
+      enumerate all linked library files (direct and transitive) and then calls
+      `get-file` on each to read its `components` map; each library component
+      entry carries a `libraryFileId` and `libraryFileName` field in the
+      response. `penpot_add_component_instance` now accepts an optional
+      `libraryFileId`; when supplied, the component's main-instance tree is
+      looked up in that library file instead of the current file, and the
+      cloned instance's root `component-file` field is set to the library
+      file's id (matching what Penpot's own editor writes for cross-file
+      component instances). Note: `get-file-libraries` returns file metadata
+      only — it does not include shape/component data — so a separate
+      `get-file` call per library is necessary to enumerate components; this
+      is the same two-step pattern Penpot's own frontend uses.)
+- [x] Comments API — `penpot_list_comment_threads` lists all threads for a file;
+      `penpot_get_comments` fetches the replies inside a thread;
+      `penpot_create_comment_thread` pins a new thread to a canvas position
+      (x/y + optional `frameId`); `penpot_create_comment` adds a reply;
+      `penpot_update_comment` edits an existing comment's text;
+      `penpot_resolve_comment_thread` marks a thread resolved or reopens it;
+      `penpot_delete_comment` removes a single reply; and
+      `penpot_delete_comment_thread` removes a whole thread and all its replies.
+      All eight tools go through `PenpotRpcClient` methods that send
+      kebab-case JSON params to the `get-comment-threads` /
+      `create-comment-thread` / `update-comment-thread` / `delete-comment` /
+      etc. RPC endpoints (same call pattern as every other tool). Wire format
+      verified against Penpot's frontend source (`data/comments.cljs`):
+      `position` is a nested `{ x, y }` JSON object; `frame-id` is optional
+      on creation (omit to place on the page root); `is-resolved` controls
+      thread resolution state.
+- [x] Text search-and-replace across a file — `penpot_replace_text` finds
+      every text shape on a page whose runs contain a literal search string and
+      rewrites all occurrences in a single `update-file` call. Matching is
+      case-insensitive by default (`caseSensitive: true` to override); an
+      optional `limit` caps the number of shapes touched; empty `replacement`
+      deletes matches. Replacement is per text-run (leaf node): a search string
+      that spans two adjacent runs within a paragraph is not matched — this
+      covers the common case where all text is in a single run per paragraph.
+      (Done — regex metacharacters in the search string are escaped so `.` /
+      `*` / `(` etc. are always matched literally, not as pattern operators.)
+- [x] Cross-page/whole-file undo — `penpot_checkpoint` now accepts an optional
+      `pageId`; omit it to snapshot every page in the file in one call.
+      `penpot_restore_checkpoint` restores all snapshotted pages in a single
+      `update-file` call. Checkpoints still live in server memory and don't
+      survive a restart; persistence across restarts is still not implemented
+      (callers needing that should snapshot via `penpot_get_file_snapshot`
+      themselves). (Done — `Checkpoint` in `checkpoints.ts` now holds a
+      `pages` map (pageId → objects) instead of a single `pageId`/`objects`
+      pair; the restore loop iterates every entry and accumulates all changes
+      before sending one `update-file` call — the same single-round-trip
+      pattern used by `penpot_batch`.)
+

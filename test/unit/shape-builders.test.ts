@@ -1710,3 +1710,103 @@ describe('bool', () => {
     expect((obj.fills as { 'fill-color': string }[])[0]?.['fill-color']).toBe('#0000FF')
   })
 })
+
+describe('constraintsH / constraintsV', () => {
+  it('emits constraints-h and constraints-v in rect builder output when provided', () => {
+    const obj = rect({
+      name: 'R', x: 0, y: 0, width: 100, height: 50,
+      parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID,
+      constraintsH: 'left',
+      constraintsV: 'top',
+    })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBe('left')
+    expect((obj as Record<string, unknown>)['constraints-v']).toBe('top')
+  })
+
+  it('omits constraints-h and constraints-v from rect output when not provided', () => {
+    const obj = rect({ name: 'R', x: 0, y: 0, width: 100, height: 50, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBeUndefined()
+    expect((obj as Record<string, unknown>)['constraints-v']).toBeUndefined()
+  })
+
+  it('emits constraints-h and constraints-v in frame builder output', () => {
+    const obj = frame({
+      name: 'F', x: 0, y: 0, width: 200, height: 100,
+      parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID,
+      constraintsH: 'scale',
+      constraintsV: 'center',
+    })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBe('scale')
+    expect((obj as Record<string, unknown>)['constraints-v']).toBe('center')
+  })
+
+  it('emits constraints-h and constraints-v in text builder output', () => {
+    const obj = text({
+      name: 'T', x: 0, y: 0, width: 100, height: 30,
+      parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID,
+      characters: 'hello',
+      constraintsH: 'leftright',
+      constraintsV: 'topbottom',
+    })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBe('leftright')
+    expect((obj as Record<string, unknown>)['constraints-v']).toBe('topbottom')
+  })
+
+  it('emits constraints-h and constraints-v in circle builder output', () => {
+    const obj = circle({
+      name: 'C', x: 10, y: 10, width: 50, height: 50,
+      parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID,
+      constraintsH: 'right',
+      constraintsV: 'bottom',
+    })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBe('right')
+    expect((obj as Record<string, unknown>)['constraints-v']).toBe('bottom')
+  })
+
+  it('emits constraints-h and constraints-v in image builder output', () => {
+    const obj = image({
+      name: 'I', x: 0, y: 0, width: 200, height: 150,
+      parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID,
+      constraintsH: 'center',
+      constraintsV: 'scale',
+      metadata: { id: 'media-uuid', width: 400, height: 300, mtype: 'image/png' },
+    })
+    expect((obj as Record<string, unknown>)['constraints-h']).toBe('center')
+    expect((obj as Record<string, unknown>)['constraints-v']).toBe('scale')
+  })
+
+  it('extracts constraintsH and constraintsV from shape objects via extractEditableFields', () => {
+    const shape: ShapeNode = {
+      type: 'rect',
+      name: 'R',
+      'constraints-h': 'left',
+      'constraints-v': 'topbottom',
+    }
+    const fields = extractEditableFields(shape)
+    expect(fields.constraintsH).toBe('left')
+    expect(fields.constraintsV).toBe('topbottom')
+  })
+
+  it('returns undefined constraintsH/constraintsV when fields are absent', () => {
+    const shape: ShapeNode = { type: 'rect', name: 'R' }
+    const fields = extractEditableFields(shape)
+    expect(fields.constraintsH).toBeUndefined()
+    expect(fields.constraintsV).toBeUndefined()
+  })
+
+  it('supports all valid constraintsH values in the rect builder', () => {
+    const validH = ['left', 'right', 'leftright', 'center', 'scale'] as const
+    for (const val of validH) {
+      const obj = rect({ name: 'R', x: 0, y: 0, width: 10, height: 10, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID, constraintsH: val })
+      expect((obj as Record<string, unknown>)['constraints-h']).toBe(val)
+    }
+  })
+
+  it('supports all valid constraintsV values in the rect builder', () => {
+    const validV = ['top', 'bottom', 'topbottom', 'center', 'scale'] as const
+    for (const val of validV) {
+      const obj = rect({ name: 'R', x: 0, y: 0, width: 10, height: 10, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID, constraintsV: val })
+      expect((obj as Record<string, unknown>)['constraints-v']).toBe(val)
+    }
+  })
+})

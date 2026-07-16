@@ -23,14 +23,28 @@ import type { ShapeNode } from './shape-builders.js'
 export type Checkpoint = {
   id: string
   fileId: string
-  pageId: string
+  /** Populated when the checkpoint was scoped to a single page; undefined for whole-file checkpoints. */
+  pageId?: string
   createdAt: string
-  objects: Record<string, ShapeNode>
+  /** Snapshotted shapes per page (pageId → shape objects map). */
+  pages: Record<string, Record<string, ShapeNode>>
 }
 
 const checkpoints = new Map<string, Checkpoint>()
 
-export function saveCheckpoint(fileId: string, pageId: string, objects: Record<string, ShapeNode>): Checkpoint {
+/**
+ * Save a checkpoint for one or more pages.
+ *
+ * @param fileId   - The Penpot file id.
+ * @param pages    - Map of pageId → shape-objects to snapshot.
+ * @param pageId   - Set to a single page id when the checkpoint is page-scoped;
+ *                   omit (or pass undefined) for a whole-file checkpoint.
+ */
+export function saveCheckpoint(
+  fileId: string,
+  pages: Record<string, Record<string, ShapeNode>>,
+  pageId?: string,
+): Checkpoint {
   const checkpoint: Checkpoint = {
     id: randomUUID(),
     fileId,
@@ -38,7 +52,7 @@ export function saveCheckpoint(fileId: string, pageId: string, objects: Record<s
     createdAt: new Date().toISOString(),
     // Deep-clone so later mutations to the live page's objects (e.g. a batch tool's
     // in-memory shadow) can never retroactively alter an already-saved checkpoint.
-    objects: structuredClone(objects),
+    pages: structuredClone(pages),
   }
   checkpoints.set(checkpoint.id, checkpoint)
   return checkpoint

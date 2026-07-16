@@ -1675,3 +1675,624 @@ d('penpot_create_variant_group', () => {
     })
   })
 })
+
+d('penpot_add_variant', () => {
+  it('appends a new variant to an existing variant group and registers a new component', async () => {
+    await withScratchProject('add-variant', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const createVariantGroup = tools.find((t) => t.name === 'penpot_create_variant_group')!
+      const addVariant = tools.find((t) => t.name === 'penpot_add_variant')!
+
+      // Build a variant group with one variant first.
+      const created = (await callTool(createVariantGroup, client, {
+        fileId,
+        pageId,
+        groupName: 'Tag',
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 60,
+        variants: [
+          {
+            name: 'Default',
+            properties: [{ name: 'Style', value: 'Default' }],
+            shapes: [{ type: 'rect', name: 'Tag', x: 0, y: 0, width: 80, height: 24, fillColor: '#AAAAAA', fillOpacity: 1 }],
+          },
+        ],
+      })) as { containerId: string; variantId: string; variants: Array<{ componentId: string; mainInstanceId: string }> }
+
+      expect(created.variants).toHaveLength(1)
+
+      // Now append a second variant.
+      const addResult = (await callTool(addVariant, client, {
+        fileId,
+        pageId,
+        containerId: created.containerId,
+        groupName: 'Tag',
+        variant: {
+          name: 'Active',
+          properties: [{ name: 'Style', value: 'Active' }],
+          shapes: [{ type: 'rect', name: 'Tag', x: 100, y: 0, width: 80, height: 24, fillColor: '#3366FF', fillOpacity: 1 }],
+        },
+      })) as { componentId: string; mainInstanceId: string; revn: number }
+
+      expect(typeof addResult.componentId).toBe('string')
+      expect(typeof addResult.mainInstanceId).toBe('string')
+
+      const snapshot = await client.getFile(fileId)
+      // Container now has 2 variant roots.
+      const container = snapshot.data.pagesIndex[pageId]!.objects[created.containerId] as {
+        shapes: string[]
+        isVariantContainer: boolean
+        variantId: string
+      }
+      expect(container.shapes).toHaveLength(2)
+      expect(container.isVariantContainer).toBe(true)
+      expect(container.variantId).toBe(created.containerId)
+
+      // New component is registered in data.components.
+      expect(snapshot.data.components?.[addResult.componentId]).toBeDefined()
+      expect(snapshot.data.components?.[addResult.componentId]?.variantId).toBe(created.containerId)
+
+      // New main instance shape exists on the page.
+      const newInstance = snapshot.data.pagesIndex[pageId]!.objects[addResult.mainInstanceId] as {
+        componentRoot: boolean
+        name: string
+      }
+      expect(newInstance).toBeDefined()
+      expect(newInstance.componentRoot).toBe(true)
+    })
+  })
+})
+
+d('penpot_group_shapes / penpot_ungroup_shapes', () => {
+  it('wraps sibling shapes in a new group at the correct z-position', async () => {
+    await withScratchProject('group-shapes', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+      const groupShapes = tools.find((t) => t.name === 'penpot_group_shapes')!
+
+      // Create three shapes; we will group the first two.
+      const created = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          { type: 'rect', name: 'A', x: 10, y: 10, width: 40, height: 40 },
+          { type: 'rect', name: 'B', x: 60, y: 10, width: 40, height: 40 },
+          { type: 'rect', name: 'C', x: 110, y: 10, width: 40, height: 40 },
+        ],
+      })) as { shapeIds: string[] }
+      const [a, b, c] = created.shapeIds as [string, string, string]
+
+      const result = (await callTool(groupShapes, client, {
+        fileId,
+        pageId,
+        shapeIds: [a, b],
+      })) as { groupId: string }
+
+      expect(typeof result.groupId).toBe('string')
+
+      const snapshot = await client.getFile(fileId)
+      const group = snapshot.data.pagesIndex[pageId]!.objects[result.groupId] as {
+        type: string
+        shapes: string[]
+        parentId: string
+        x: number
+        y: number
+        width: number
+        height: number
+      }
+      expect(group.type).toBe('group')
+      // Both shapes are children of the new group.
+      expect(group.shapes).toContain(a)
+      expect(group.shapes).toContain(b)
+      // C is still at the root level, not inside the group.
+      const cShape = snapshot.data.pagesIndex[pageId]!.objects[c] as { parentId: string }
+      expect(cShape.parentId).not.toBe(result.groupId)
+      // Bounding box spans both A (10..50) and B (60..100) → x=10, width=90
+      expect(group.x).toBeCloseTo(10, 0)
+      expect(group.y).toBeCloseTo(10, 0)
+      expect(group.width).toBeCloseTo(90, 0)
+      expect(group.height).toBeCloseTo(40, 0)
+    })
+  })
+
+  it('dissolves a group: children are reparented to the group\'s former parent', async () => {
+    await withScratchProject('ungroup-shapes', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+      const groupShapes = tools.find((t) => t.name === 'penpot_group_shapes')!
+      const ungroupShapes = tools.find((t) => t.name === 'penpot_ungroup_shapes')!
+
+      const created = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          { type: 'rect', name: 'X', x: 0, y: 0, width: 30, height: 30 },
+          { type: 'rect', name: 'Y', x: 40, y: 0, width: 30, height: 30 },
+        ],
+      })) as { shapeIds: string[] }
+      const [x, y] = created.shapeIds as [string, string]
+
+      const grouped = (await callTool(groupShapes, client, {
+        fileId,
+        pageId,
+        shapeIds: [x, y],
+      })) as { groupId: string }
+
+      // Verify group exists before ungrouping.
+      let snapshot = await client.getFile(fileId)
+      expect(snapshot.data.pagesIndex[pageId]!.objects[grouped.groupId]).toBeDefined()
+
+      await callTool(ungroupShapes, client, {
+        fileId,
+        pageId,
+        groupId: grouped.groupId,
+      })
+
+      snapshot = await client.getFile(fileId)
+      // Group is gone.
+      expect(snapshot.data.pagesIndex[pageId]!.objects[grouped.groupId]).toBeUndefined()
+      // Former children are back at the root level (their original grandparent).
+      const root = snapshot.data.pagesIndex[pageId]!.objects['00000000-0000-0000-0000-000000000000'] as {
+        shapes: string[]
+      }
+      expect(root.shapes).toContain(x)
+      expect(root.shapes).toContain(y)
+      const xShape = snapshot.data.pagesIndex[pageId]!.objects[x] as { parentId: string }
+      expect(xShape.parentId).toBe('00000000-0000-0000-0000-000000000000')
+    })
+  })
+
+  it('throws when shapes have different parents', async () => {
+    await withScratchProject('group-shapes-diff-parents', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+      const groupShapes = tools.find((t) => t.name === 'penpot_group_shapes')!
+
+      const frameResult = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [{ type: 'frame', name: 'Board', x: 0, y: 0, width: 200, height: 200 }],
+      })) as { shapeIds: string[] }
+      const frameId = frameResult.shapeIds[0]!
+
+      const shapeResult = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          { type: 'rect', name: 'RootShape', x: 300, y: 0, width: 30, height: 30 },
+          { type: 'rect', name: 'ChildShape', x: 10, y: 10, width: 20, height: 20, parentId: frameId, frameId },
+        ],
+      })) as { shapeIds: string[] }
+      const [rootShape, childShape] = shapeResult.shapeIds as [string, string]
+
+      await expect(
+        callTool(groupShapes, client, {
+          fileId,
+          pageId,
+          shapeIds: [rootShape, childShape],
+        }),
+      ).rejects.toThrow(/same parent/)
+    })
+  })
+})
+
+d('rich text paragraphs', () => {
+  it('creates a text shape with multiple paragraphs and verifies the wire format round-trips', async () => {
+    await withScratchProject('rich-text-paragraphs', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+
+      const result = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          {
+            type: 'text',
+            name: 'RichText',
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 80,
+            paragraphs: [
+              {
+                textAlign: 'center',
+                fontFamily: 'sourcesanspro',
+                fontSize: '18',
+                fontWeight: '700',
+                ranges: [{ characters: 'Heading' }],
+              },
+              {
+                textAlign: 'left',
+                fontFamily: 'sourcesanspro',
+                fontSize: '14',
+                fontWeight: '400',
+                ranges: [
+                  { characters: 'Normal ' },
+                  { characters: 'bold', fontWeight: '700' },
+                ],
+              },
+            ],
+          },
+        ],
+      })) as { shapeIds: string[] }
+
+      const shapeId = result.shapeIds[0]!
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        type: string
+        content: {
+          type: string
+          children: Array<{
+            type: string
+            children: Array<{ type: string; children?: Array<{ text: string }> }>
+          }>
+        }
+      }
+
+      expect(shape.type).toBe('text')
+      // Two paragraph nodes inside root.
+      const root = shape.content
+      expect(root.type).toBe('root')
+      const paragraphs = root.children[0]?.children ?? []
+      expect(paragraphs.length).toBe(2)
+      // Second paragraph has two leaf nodes (ranges).
+      const secondParagraph = paragraphs[1]!
+      expect(secondParagraph.children).toBeDefined()
+      expect(secondParagraph.children!.length).toBe(2)
+    })
+  })
+
+  it('preserves a rich-text shape\'s paragraphs when updating only geometry via penpot_update_shapes', async () => {
+    await withScratchProject('rich-text-update-preserves', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+      const updateShapes = tools.find((t) => t.name === 'penpot_update_shapes')!
+
+      const created = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          {
+            type: 'text',
+            name: 'TwoPara',
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 80,
+            paragraphs: [
+              { textAlign: 'left', ranges: [{ characters: 'First paragraph' }] },
+              { textAlign: 'right', ranges: [{ characters: 'Second paragraph' }] },
+            ],
+          },
+        ],
+      })) as { shapeIds: string[] }
+      const shapeId = created.shapeIds[0]!
+
+      // Update only x position — rich text content must survive.
+      await callTool(updateShapes, client, {
+        fileId,
+        pageId,
+        patches: [{ shapeId, x: 100 }],
+      })
+
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        x: number
+        content: { children: Array<{ children: Array<{ children: Array<unknown> }> }> }
+      }
+      expect(shape.x).toBe(100)
+      // Both paragraphs are still there.
+      const paragraphs = shape.content.children[0]?.children ?? []
+      expect(paragraphs.length).toBe(2)
+    })
+  })
+})
+
+d('gradient fills', () => {
+  it('creates a rect with a linear gradient fill and reads it back from get-file', async () => {
+    await withScratchProject('gradient-linear', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+
+      const result = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          {
+            type: 'rect',
+            name: 'GradRect',
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+            fills: [
+              {
+                type: 'linear-gradient',
+                startX: 0,
+                startY: 0,
+                endX: 1,
+                endY: 0,
+                opacity: 1,
+                stops: [
+                  { color: '#FF0000', opacity: 1, offset: 0 },
+                  { color: '#0000FF', opacity: 1, offset: 1 },
+                ],
+              },
+            ],
+          },
+        ],
+      })) as { shapeIds: string[] }
+
+      const shapeId = result.shapeIds[0]!
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        fills: Array<{ fillColorGradient?: { type: string; stops: Array<{ color: string }> } }>
+      }
+
+      expect(shape.fills).toHaveLength(1)
+      // Penpot stores gradients as `fillColorGradient` on the fill object (camelCase from get-file).
+      const gradient = shape.fills[0]!.fillColorGradient
+      expect(gradient).toBeDefined()
+      expect(gradient!.type).toBe('linear')
+      expect(gradient!.stops).toHaveLength(2)
+    })
+  })
+
+  it('creates a rect with a radial gradient fill and reads it back from get-file', async () => {
+    await withScratchProject('gradient-radial', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+
+      const result = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          {
+            type: 'circle',
+            name: 'RadialCircle',
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 80,
+            fills: [
+              {
+                type: 'radial-gradient',
+                startX: 0.5,
+                startY: 0.5,
+                endX: 1,
+                endY: 0.5,
+                opacity: 1,
+                stops: [
+                  { color: '#FFFFFF', opacity: 1, offset: 0 },
+                  { color: '#000000', opacity: 0, offset: 1 },
+                ],
+              },
+            ],
+          },
+        ],
+      })) as { shapeIds: string[] }
+
+      const shapeId = result.shapeIds[0]!
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        fills: Array<{ fillColorGradient?: { type: string } }>
+      }
+
+      expect(shape.fills).toHaveLength(1)
+      const gradient = shape.fills[0]!.fillColorGradient
+      expect(gradient).toBeDefined()
+      expect(gradient!.type).toBe('radial')
+    })
+  })
+
+  it('round-trips a gradient fill through penpot_update_shapes', async () => {
+    await withScratchProject('gradient-update', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+      const updateShapes = tools.find((t) => t.name === 'penpot_update_shapes')!
+
+      // Create with a solid fill, then replace with a gradient.
+      const created = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [{ type: 'rect', name: 'Flat', x: 0, y: 0, width: 50, height: 50, fillColor: '#FF0000', fillOpacity: 1 }],
+      })) as { shapeIds: string[] }
+      const shapeId = created.shapeIds[0]!
+
+      await callTool(updateShapes, client, {
+        fileId,
+        pageId,
+        patches: [
+          {
+            shapeId,
+            fills: [
+              {
+                type: 'linear-gradient',
+                startX: 0,
+                startY: 0,
+                endX: 1,
+                endY: 1,
+                opacity: 1,
+                stops: [
+                  { color: '#00FF00', opacity: 1, offset: 0 },
+                  { color: '#0000FF', opacity: 1, offset: 1 },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        fills: Array<{ fillColorGradient?: { type: string; stops: Array<unknown> } }>
+      }
+      const gradient = shape.fills[0]!.fillColorGradient
+      expect(gradient).toBeDefined()
+      expect(gradient!.type).toBe('linear')
+      expect(gradient!.stops).toHaveLength(2)
+    })
+  })
+})
+
+d('penpot_create_page / penpot_list_pages / penpot_rename_page / penpot_delete_page', () => {
+  it('creates a new page and it appears in list_pages', async () => {
+    await withScratchProject('page-crud-create', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const createPage = tools.find((t) => t.name === 'penpot_create_page')!
+      const listPages = tools.find((t) => t.name === 'penpot_list_pages')!
+
+      const before = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string; name: string }> }
+      const beforeCount = before.pages.length
+
+      const created = (await callTool(createPage, client, { fileId, name: 'Flows' })) as {
+        pageId: string
+        pageName: string
+        revn: number
+      }
+      expect(created.pageName).toBe('Flows')
+      expect(typeof created.pageId).toBe('string')
+
+      const after = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string; name: string }> }
+      expect(after.pages.length).toBe(beforeCount + 1)
+      const newPage = after.pages.find((p) => p.id === created.pageId)
+      expect(newPage).toBeDefined()
+      expect(newPage!.name).toBe('Flows')
+    })
+  })
+
+  it('renames an existing page and the new name appears in list_pages', async () => {
+    await withScratchProject('page-crud-rename', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const renamePage = tools.find((t) => t.name === 'penpot_rename_page')!
+      const listPages = tools.find((t) => t.name === 'penpot_list_pages')!
+
+      const result = (await callTool(renamePage, client, { fileId, pageId, name: 'Renamed' })) as {
+        pageId: string
+        name: string
+        revn: number
+      }
+      expect(result.name).toBe('Renamed')
+      expect(result.pageId).toBe(pageId)
+
+      const list = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string; name: string }> }
+      const page = list.pages.find((p) => p.id === pageId)
+      expect(page).toBeDefined()
+      expect(page!.name).toBe('Renamed')
+    })
+  })
+
+  it('deletes a page and it no longer appears in list_pages', async () => {
+    await withScratchProject('page-crud-delete', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const createPage = tools.find((t) => t.name === 'penpot_create_page')!
+      const deletePage = tools.find((t) => t.name === 'penpot_delete_page')!
+      const listPages = tools.find((t) => t.name === 'penpot_list_pages')!
+
+      // Create a second page so we can safely delete it (can't delete the only page).
+      const extra = (await callTool(createPage, client, { fileId, name: 'Extra' })) as { pageId: string }
+
+      const before = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string }> }
+      const beforeCount = before.pages.length
+
+      await callTool(deletePage, client, { fileId, pageId: extra.pageId })
+
+      const after = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string }> }
+      expect(after.pages.length).toBe(beforeCount - 1)
+      expect(after.pages.find((p) => p.id === extra.pageId)).toBeUndefined()
+    })
+  })
+
+  it('list_pages returns pages in order, matching data.pages array', async () => {
+    await withScratchProject('page-crud-order', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const createPage = tools.find((t) => t.name === 'penpot_create_page')!
+      const listPages = tools.find((t) => t.name === 'penpot_list_pages')!
+
+      await callTool(createPage, client, { fileId, name: 'Alpha' })
+      await callTool(createPage, client, { fileId, name: 'Beta' })
+      await callTool(createPage, client, { fileId, name: 'Gamma' })
+
+      const list = (await callTool(listPages, client, { fileId })) as { pages: Array<{ id: string; name: string }> }
+      const names = list.pages.map((p) => p.name)
+      // The three new pages must appear at the end, in creation order.
+      expect(names.slice(-3)).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+  })
+})
+
+d('penpot_upload_media', () => {
+  // Uses the dataBase64 source with a minimal 1×1 white PNG so no external
+  // URL or local file path is needed — the MCP server sends the decoded bytes
+  // directly to Penpot's create-file-media-object RPC.
+  const TINY_PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQ' +
+    'AABjkB6QAAAABJRU5ErkJggg=='
+
+  it('uploads base64 image bytes and returns a media object with id/width/height/mtype', async () => {
+    await withScratchProject('upload-media-base64', async ({ client, fileId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const uploadMedia = tools.find((t) => t.name === 'penpot_upload_media')!
+
+      const result = (await callTool(uploadMedia, client, {
+        fileId,
+        name: 'test-pixel',
+        dataBase64: TINY_PNG_BASE64,
+        mtype: 'image/png',
+      })) as { id: string; width: number; height: number; mtype: string; name: string }
+
+      expect(typeof result.id).toBe('string')
+      expect(result.id.length).toBeGreaterThan(0)
+      expect(result.width).toBe(1)
+      expect(result.height).toBe(1)
+      expect(result.mtype).toBe('image/png')
+    })
+  })
+
+  it('uses the returned mediaId to create an image shape on a page', async () => {
+    await withScratchProject('upload-media-then-shape', async ({ client, fileId, pageId }) => {
+      const tools = contentTools(TEST_TOKENS_PATH)
+      const uploadMedia = tools.find((t) => t.name === 'penpot_upload_media')!
+      const addShapes = tools.find((t) => t.name === 'penpot_add_shapes')!
+
+      const media = (await callTool(uploadMedia, client, {
+        fileId,
+        name: 'pixel',
+        dataBase64: TINY_PNG_BASE64,
+        mtype: 'image/png',
+      })) as { id: string; width: number; height: number; mtype: string }
+
+      const result = (await callTool(addShapes, client, {
+        fileId,
+        pageId,
+        shapes: [
+          {
+            type: 'image',
+            name: 'PixelImg',
+            x: 0,
+            y: 0,
+            width: 50,
+            height: 50,
+            mediaId: media.id,
+            mediaWidth: media.width,
+            mediaHeight: media.height,
+            mtype: media.mtype,
+          },
+        ],
+      })) as { shapeIds: string[] }
+
+      const shapeId = result.shapeIds[0]!
+      const snapshot = await client.getFile(fileId)
+      const shape = snapshot.data.pagesIndex[pageId]!.objects[shapeId] as {
+        type: string
+        metadata: { id: string; width: number; height: number }
+      }
+      expect(shape.type).toBe('image')
+      expect(shape.metadata.id).toBe(media.id)
+      expect(shape.metadata.width).toBe(1)
+      expect(shape.metadata.height).toBe(1)
+    })
+  })
+})
