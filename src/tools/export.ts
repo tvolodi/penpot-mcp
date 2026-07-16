@@ -26,8 +26,10 @@ export function registerExportTool(server: McpServer, exporter: PenpotExporterCl
     {
       description:
         'Render a shape (or an entire page, by passing the root frame) from a Penpot file to a PNG or SVG ' +
-        'image, using Penpot\'s own server-side exporter. Requires PENPOT_LOGIN_EMAIL/PENPOT_LOGIN_PASSWORD to ' +
-        'be configured, separately from PENPOT_ACCESS_TOKEN.',
+        'image, using Penpot\'s own server-side exporter. Requires either ' +
+        'PENPOT_LOGIN_EMAIL/PENPOT_LOGIN_PASSWORD (password-based login) or ' +
+        'PENPOT_AUTH_TOKEN_COOKIE (a pre-obtained auth-token cookie, e.g. from completing an SSO/OIDC login in a browser) ' +
+        'to be configured, separately from PENPOT_ACCESS_TOKEN.',
       inputSchema: exportShapeInput.shape,
     },
     async (input: unknown) => {

@@ -61,12 +61,21 @@ async function main(): Promise<void> {
   registerTools(server, client, projectFileTools)
   registerTools(server, client, contentTools(config.PENPOT_TOKENS_PATH))
 
+  // Register penpot_export_shape if any auth mode for the exporter is configured.
+  // PENPOT_LOGIN_EMAIL/PASSWORD (password login) takes precedence over
+  // PENPOT_AUTH_TOKEN_COOKIE (pre-obtained SSO/OIDC cookie).
   if (config.PENPOT_LOGIN_EMAIL && config.PENPOT_LOGIN_PASSWORD) {
-    const exporter = new PenpotExporterClient(
-      config.PENPOT_BASE_URL,
-      config.PENPOT_LOGIN_EMAIL,
-      config.PENPOT_LOGIN_PASSWORD,
-    )
+    const exporter = new PenpotExporterClient(config.PENPOT_BASE_URL, {
+      mode: 'password',
+      email: config.PENPOT_LOGIN_EMAIL,
+      password: config.PENPOT_LOGIN_PASSWORD,
+    })
+    registerExportTool(server, exporter)
+  } else if (config.PENPOT_AUTH_TOKEN_COOKIE) {
+    const exporter = new PenpotExporterClient(config.PENPOT_BASE_URL, {
+      mode: 'cookie',
+      authTokenCookie: config.PENPOT_AUTH_TOKEN_COOKIE,
+    })
     registerExportTool(server, exporter)
   }
 

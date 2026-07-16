@@ -15,8 +15,23 @@ const envSchema = z.object({
   // Optional: only required for penpot_export_shape. Penpot's render pipeline
   // authenticates via session cookie, not the access token above — see
   // exporter-client.ts for why. When unset, the export tool is not registered.
+  //
+  // Two mutually exclusive ways to supply the cookie:
+  //   1. PENPOT_LOGIN_EMAIL + PENPOT_LOGIN_PASSWORD — the server logs in with
+  //      email/password and caches the resulting auth-token cookie, refreshing
+  //      it automatically on expiry. Works for instances with password auth.
+  //   2. PENPOT_AUTH_TOKEN_COOKIE — a raw auth-token cookie value obtained by
+  //      completing SSO/OIDC login in a real browser. Useful for instances
+  //      that don't expose password login. The server uses it as-is and emits
+  //      a clear error if it expires (no automatic refresh is possible).
+  //      To get the value: open your Penpot instance in a browser, complete the
+  //      SSO login, then copy the `auth-token` cookie from DevTools → Application
+  //      → Cookies (or `document.cookie`).
+  //
+  // If both are set, PENPOT_LOGIN_EMAIL/PENPOT_LOGIN_PASSWORD takes precedence.
   PENPOT_LOGIN_EMAIL: z.string().optional(),
   PENPOT_LOGIN_PASSWORD: z.string().optional(),
+  PENPOT_AUTH_TOKEN_COOKIE: z.string().optional(),
 })
 
 export type Config = z.infer<typeof envSchema>

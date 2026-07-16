@@ -72,6 +72,42 @@ export class PenpotRpcClient {
     return this.call('get-teams', 'GET', {})
   }
 
+  getTeamFontVariants(teamId: string): Promise<FontVariant[]> {
+    return this.call('get-font-variants', 'GET', { 'team-id': teamId }) as Promise<FontVariant[]>
+  }
+
+  /**
+   * Downloads the binary bytes for a font variant (by its UUID). The Penpot
+   * `download-font` command redirects to the storage asset URI; `fetch` follows
+   * the redirect automatically. If the endpoint instead returns JSON with a `uri`
+   * field (older or differently configured instances), the URI is fetched with
+   * the same auth token.
+   */
+  async downloadFontVariantBytes(variantId: string): Promise<Buffer> {
+    const url = `${this.baseUrl}/api/rpc/command/download-font?id=${encodeURIComponent(variantId)}`
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Token ${this.token}` },
+      redirect: 'follow',
+    })
+    if (!res.ok) {
+      throw new Error(`Font variant download failed: HTTP ${res.status}`)
+    }
+    const contentType = res.headers.get('content-type') ?? ''
+    if (contentType.includes('json') || contentType.includes('transit')) {
+      // Endpoint returned JSON/transit with { uri } — fetch the actual asset URI.
+      const body = (await res.json()) as { uri?: string }
+      if (!body.uri) throw new Error('Font variant download: unexpected response format (no uri field)')
+      const fontRes = await fetch(body.uri, {
+        headers: { Authorization: `Token ${this.token}` },
+      })
+      if (!fontRes.ok) throw new Error(`Font asset fetch failed: HTTP ${fontRes.status}`)
+      return Buffer.from(await fontRes.arrayBuffer())
+    }
+    // Redirect was followed → response body is the raw font bytes.
+    return Buffer.from(await res.arrayBuffer())
+  }
+
   getProjects(teamId: string): Promise<unknown> {
     return this.call('get-projects', 'GET', { 'team-id': teamId })
   }
@@ -127,6 +163,85 @@ export class PenpotRpcClient {
       changes,
     })) as UpdateFileResult
   }
+
+  // --- Media uploads ---
+
+  /**
+   * Uploads binary content (a Buffer) as a media object attached to `fileId`.
+   * Sends `upload-file-media-object` via multipart/form-data — the only Penpot
+   * RPC endpoint that accepts a binary payload rather than JSON.
+   *
+   * Returns the created `MediaObject` whose `id` can be used as `mediaId` in an
+   * `image` shape's `metadata` field.
+   */
+  async uploadFileMediaObject(
+    fileId: string,
+    name: string,
+    content: Buffer,
+    mtype: string,
+    isLocal = true,
+  ): Promise<MediaObject> {
+    const url = `${this.baseUrl}/api/rpc/command/upload-file-media-object`
+    const ext = mtype.split('/')[1]?.replace('jpeg', 'jpg').replace('svg+xml', 'svg') ?? 'bin'
+    const formData = new FormData()
+    formData.append('file-id', fileId)
+    formData.append('is-local', String(isLocal))
+    formData.append('name', name)
+    formData.append('content', new Blob([content.buffer as ArrayBuffer], { type: mtype }), `${name}.${ext}`)
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Token ${this.token}`, Accept: 'application/json' },
+      body: formData,
+    })
+
+    const text = await res.text()
+    let parsed: unknown = null
+    if (text) {
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        parsed = text
+      }
+    }
+
+    if (res.status < 200 || res.status >= 300) {
+      throw new PenpotRpcError('upload-file-media-object', res.status, parsed)
+    }
+
+    return parsed as MediaObject
+  }
+
+  /**
+   * Creates a media object in `fileId` by having Penpot's server download the
+   * image from `imageUrl` (POST `create-file-media-object-from-url`). Prefer
+   * this over `uploadFileMediaObject` when you already have an HTTPS URL, so the
+   * MCP server doesn't need to buffer the image bytes itself.
+   */
+  createFileMediaObjectFromUrl(
+    fileId: string,
+    imageUrl: string,
+    name?: string,
+    isLocal = true,
+  ): Promise<MediaObject> {
+    const params: Record<string, unknown> = { 'file-id': fileId, 'is-local': isLocal, url: imageUrl }
+    if (name) params['name'] = name
+    return this.call('create-file-media-object-from-url', 'POST', params) as Promise<MediaObject>
+  }
+}
+
+/**
+ * A Penpot file media object — the server-side record created by
+ * `upload-file-media-object` or `create-file-media-object-from-url`.
+ * Use its `id` as the `mediaId` when building an `image` shape.
+ */
+export type MediaObject = {
+  id: string
+  name: string
+  width: number
+  height: number
+  mtype: string
+  isLocal: boolean
 }
 
 export type FileComponent = {
@@ -137,6 +252,19 @@ export type FileComponent = {
   mainInstancePage: string
   variantId?: string
   variantProperties?: Array<{ name: string; value: string }>
+}
+
+export type FontVariant = {
+  id: string
+  teamId: string
+  fontId: string
+  fontFamily: string
+  fontWeight: number
+  fontStyle: string
+  ttfFileId: string | null
+  otfFileId: string | null
+  woff1FileId: string | null
+  woff2FileId: string | null
 }
 
 export type FileSummary = {

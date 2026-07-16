@@ -11,8 +11,17 @@
  * reads the literal `auth-token` cookie and nothing else) and empirically
  * against a live instance.
  *
- * So this client logs in once with email/password to obtain that cookie,
- * caches it for the process lifetime, and re-logs-in on expiry.
+ * Two auth modes are supported:
+ *
+ *   'password' — logs in once with email/password to obtain the cookie,
+ *     caches it for the process lifetime, and re-logs-in automatically on
+ *     expiry. Works for Penpot instances that expose password login.
+ *
+ *   'cookie' — accepts a raw auth-token value the caller already obtained
+ *     (e.g. by completing an OIDC/SSO login in a real browser and copying
+ *     the auth-token cookie). The profile-id is fetched via `get-profile`
+ *     on first use. No automatic re-login is possible; a helpful error is
+ *     thrown if the cookie expires.
  */
 
 import { encodeMap, kw, uuid } from './transit.js'
@@ -35,21 +44,34 @@ export type ExportResult = {
   filename: string
 }
 
+/** Discriminated union describing how the exporter authenticates. */
+export type ExporterAuth =
+  | { mode: 'password'; email: string; password: string }
+  | { mode: 'cookie'; authTokenCookie: string }
+
 export class PenpotExporterClient {
   private authCookie: string | undefined
   private profileId: string | undefined
 
   constructor(
     private readonly baseUrl: string,
-    private readonly email: string,
-    private readonly password: string,
-  ) {}
+    private readonly auth: ExporterAuth,
+  ) {
+    if (auth.mode === 'cookie') {
+      // Pre-seed the cookie so the first exportShape call skips the login step.
+      this.authCookie = auth.authTokenCookie
+    }
+  }
 
   private async login(): Promise<void> {
+    if (this.auth.mode !== 'password') {
+      // Should never be reached — ensureSession guards this.
+      throw new Error('Internal error: login() called in cookie auth mode')
+    }
     const res = await fetch(`${this.baseUrl}/api/rpc/command/login-with-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ email: this.email, password: this.password }),
+      body: JSON.stringify({ email: this.auth.email, password: this.auth.password }),
     })
 
     const text = await res.text()
@@ -71,9 +93,35 @@ export class PenpotExporterClient {
     this.profileId = profile.id
   }
 
+  /**
+   * Fetches the profile-id for the currently cached cookie via `get-profile`.
+   * Used in cookie mode where there is no login response to parse.
+   */
+  private async fetchProfileId(): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/rpc/command/get-profile`, {
+      headers: { Cookie: `auth-token=${this.authCookie!}`, Accept: 'application/json' },
+    })
+    const text = await res.text()
+    if (res.status < 200 || res.status >= 300) {
+      throw new PenpotExporterError('login', res.status, text)
+    }
+    const profile = JSON.parse(text) as { id?: string }
+    if (!profile.id) {
+      throw new PenpotExporterError('login', res.status, 'no profile id in get-profile response')
+    }
+    this.profileId = profile.id
+  }
+
   private async ensureSession(): Promise<{ cookie: string; profileId: string }> {
-    if (!this.authCookie || !this.profileId) {
+    if (!this.authCookie) {
+      // password mode only — cookie mode pre-seeds authCookie in the constructor.
       await this.login()
+    }
+    if (!this.profileId) {
+      if (this.auth.mode === 'cookie') {
+        await this.fetchProfileId()
+      }
+      // In password mode profileId is always set by login() above.
     }
     return { cookie: this.authCookie!, profileId: this.profileId! }
   }
@@ -118,11 +166,24 @@ export class PenpotExporterClient {
 
     const text = await res.text()
 
-    // The session cookie can expire between calls; re-login once and retry.
+    // The session cookie can expire between calls.
     if ((res.status === 401 || res.status === 403) && retry) {
-      this.authCookie = undefined
-      this.profileId = undefined
-      return this.exportShape(fileId, pageId, shapeId, format, scale, name, false)
+      if (this.auth.mode === 'password') {
+        // Re-login and retry once.
+        this.authCookie = undefined
+        this.profileId = undefined
+        return this.exportShape(fileId, pageId, shapeId, format, scale, name, false)
+      } else {
+        // Cookie mode: no credentials to re-login with.
+        throw new PenpotExporterError(
+          'export',
+          res.status,
+          'The PENPOT_AUTH_TOKEN_COOKIE session has expired. ' +
+            'Obtain a fresh auth-token cookie by completing the OIDC/SSO login in your browser ' +
+            '(DevTools → Application → Cookies → auth-token), update PENPOT_AUTH_TOKEN_COOKIE ' +
+            'with the new value, and restart the MCP server.',
+        )
+      }
     }
 
     if (res.status < 200 || res.status >= 300) {

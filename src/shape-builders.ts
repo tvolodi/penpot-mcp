@@ -26,7 +26,57 @@
 
 import { randomUUID } from 'node:crypto'
 
-export type Fill = { 'fill-color': string; 'fill-opacity': number }
+/** Solid color fill — a hex color plus overall opacity. */
+export type SolidFill = { 'fill-color': string; 'fill-opacity': number }
+
+/** A single stop in a gradient fill. `offset` is 0–1 (position along the gradient). */
+export type GradientStop = { color: string; opacity: number; offset: number }
+
+/**
+ * Linear or radial gradient descriptor, used in `GradientFill['fill-color-gradient']`.
+ * All coordinates (`start-x`/`start-y`/`end-x`/`end-y`) are relative to the shape's
+ * bounding box (0 = left/top edge, 1 = right/bottom edge). `width` controls the spread
+ * perpendicular to the gradient axis (1 = full shape width — the common default).
+ */
+export type Gradient = {
+  type: 'linear' | 'radial'
+  'start-x': number
+  'start-y': number
+  'end-x': number
+  'end-y': number
+  width: number
+  stops: GradientStop[]
+}
+
+/** Gradient fill (linear or radial). `fill-opacity` is the overall layer opacity (1 = fully opaque). */
+export type GradientFill = {
+  'fill-color-gradient': Gradient
+  'fill-opacity'?: number
+}
+
+/**
+ * Image fill metadata referencing an already-uploaded Penpot media object by UUID.
+ * The caller is responsible for uploading the image to Penpot first (via the Penpot UI
+ * or a separate upload step) and supplying its media-object `id` here.
+ */
+export type ImageFillMetadata = {
+  id: string
+  width: number
+  height: number
+  mtype: string
+  name?: string
+  'keep-aspect-ratio'?: boolean
+}
+
+/** Image fill — references a Penpot media object. `fill-opacity` is the overall layer opacity. */
+export type ImageFill = {
+  'fill-image': ImageFillMetadata
+  'fill-opacity'?: number
+}
+
+/** Any valid Penpot fill: solid color, linear/radial gradient, or image. */
+export type Fill = SolidFill | GradientFill | ImageFill
+
 export type Stroke = {
   'stroke-color': string
   'stroke-opacity': number
@@ -34,6 +84,77 @@ export type Stroke = {
   'stroke-style': 'solid' | 'dotted' | 'dashed' | 'mixed'
   'stroke-alignment': 'inner' | 'outer' | 'center'
 }
+
+/**
+ * Drop/inner shadow, verified live against a real instance's `add-obj`/`get-file`: the wire
+ * field is `shadows` (an array, applied back-to-front like `fills`/`strokes`), `style` is
+ * `"drop-shadow"` | `"inner-shadow"` (not `shadowType` as the plugin API's `Shadow` type
+ * suggests), offsets are kebab-case `offset-x`/`offset-y`, and `color` is a nested
+ * `{ color, opacity }` object rather than flattened `shadow-color`/`shadow-opacity` keys.
+ */
+export type Shadow = {
+  style: 'drop-shadow' | 'inner-shadow'
+  'offset-x': number
+  'offset-y': number
+  blur: number
+  spread: number
+  color: { color: string; opacity: number }
+  hidden: boolean
+}
+
+/**
+ * A single text run within a paragraph. The `text` field carries the raw characters;
+ * all other fields are per-run style overrides that take precedence over the parent
+ * paragraph's defaults. Only set a field if it differs from the paragraph default —
+ * unset fields inherit from the paragraph. Verified field names against Penpot's
+ * `types/text.cljc` `text-node-attrs` and `text-span-attrs`.
+ */
+export type TextRange = {
+  text: string
+  fontFamily?: string
+  fontSize?: string
+  fontWeight?: string
+  fontStyle?: string
+  lineHeight?: string
+  letterSpacing?: string
+  textDecoration?: string
+  textTransform?: string
+  fills?: Fill[]
+}
+
+/**
+ * A paragraph within a text shape's content tree. `textAlign` and `textDirection` are
+ * paragraph-level only (they affect the whole paragraph, not individual runs). All other
+ * style fields are inherited defaults for the paragraph's `ranges`; individual `TextRange`
+ * entries may override any of them. Verified against Penpot's `types/text.cljc`
+ * `paragraph-attrs` (text-align, text-direction) and `text-node-attrs` (everything else).
+ */
+export type TextParagraph = {
+  textAlign?: 'left' | 'right' | 'center' | 'justify'
+  fontFamily?: string
+  fontSize?: string
+  fontWeight?: string
+  fontStyle?: string
+  lineHeight?: string
+  letterSpacing?: string
+  textDecoration?: string
+  textTransform?: string
+  fills?: Fill[]
+  ranges: TextRange[]
+}
+
+/**
+ * A single segment of a `path` shape's geometry, in Penpot's wire format.
+ * Commands are kebab-case (`move-to`, `line-to`, `curve-to`, `close-path`);
+ * params carry the relevant coordinates. The full path is an ordered array of
+ * these segments — the same structure Penpot's own editor writes when you draw a
+ * custom path or extract one from a boolean-operation result.
+ */
+export type PathCommand =
+  | { command: 'move-to'; params: { x: number; y: number } }
+  | { command: 'line-to'; params: { x: number; y: number } }
+  | { command: 'curve-to'; params: { x: number; y: number; c1x: number; c1y: number; c2x: number; c2y: number } }
+  | { command: 'close-path'; params?: Record<string, never> }
 
 const IDENTITY_MATRIX = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
 
@@ -128,6 +249,14 @@ type BaseParams = {
   frameId: string
   /** Placement within the parent's auto-layout, if the parent has one. */
   layoutItem?: LayoutItem
+  /** Overall layer opacity (0-1). Defaults to 1 (fully opaque). */
+  opacity?: number
+  /** Whether the shape is hidden (eye icon in Penpot UI). */
+  hidden?: boolean
+  /** Whether the shape is locked (lock icon in Penpot UI). */
+  blocked?: boolean
+  /** Blend mode (e.g. 'normal', 'multiply', 'screen', 'overlay'). Defaults to 'normal'. */
+  blendMode?: string
 }
 
 type CornerRadii = { r1?: number; r2?: number; r3?: number; r4?: number }
@@ -238,6 +367,7 @@ export function rect(
   params: BaseParams & {
     fills?: Fill[]
     strokes?: Stroke[]
+    shadows?: Shadow[]
   } & CornerRadii,
 ): Record<string, unknown> {
   const {
@@ -251,8 +381,13 @@ export function rect(
     parentId,
     frameId,
     layoutItem,
+    opacity,
+    hidden,
+    blocked,
+    blendMode,
     fills,
     strokes,
+    shadows,
     r1,
     r2,
     r3,
@@ -271,8 +406,13 @@ export function rect(
     'frame-id': frameId,
     ...selrectAndPoints({ x, y, width, height }, rotation),
     ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
     fills: fills ?? [],
     strokes: strokes ?? [],
+    shadows: shadows ?? [],
     r1: r1 ?? 0,
     r2: r2 ?? 0,
     r3: r3 ?? 0,
@@ -285,6 +425,7 @@ export function frame(
   params: BaseParams & {
     fills?: Fill[]
     strokes?: Stroke[]
+    shadows?: Shadow[]
     /** Adds flex or grid auto-layout to this frame, controlling how its children are positioned. */
     layout?: Layout
   } & CornerRadii,
@@ -300,9 +441,14 @@ export function frame(
     parentId,
     frameId,
     layoutItem,
+    opacity,
+    hidden,
+    blocked,
+    blendMode,
     layout,
     fills,
     strokes,
+    shadows,
     r1,
     r2,
     r3,
@@ -321,8 +467,13 @@ export function frame(
     'frame-id': frameId,
     ...selrectAndPoints({ x, y, width, height }, rotation),
     ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
     fills: fills ?? [{ 'fill-color': '#FFFFFF', 'fill-opacity': 1 }],
     strokes: strokes ?? [],
+    shadows: shadows ?? [],
     r1: r1 ?? 0,
     r2: r2 ?? 0,
     r3: r3 ?? 0,
@@ -334,13 +485,62 @@ export function frame(
   }
 }
 
+/** Builds a single paragraph node (for the content tree) from a `TextParagraph` descriptor. */
+function buildTextParagraphNode(para: TextParagraph): Record<string, unknown> {
+  return {
+    type: 'paragraph',
+    ...(para.textAlign !== undefined && { 'text-align': para.textAlign }),
+    ...(para.fontFamily !== undefined && { 'font-family': para.fontFamily }),
+    ...(para.fontSize !== undefined && { 'font-size': para.fontSize }),
+    ...(para.fontWeight !== undefined && { 'font-weight': para.fontWeight }),
+    ...(para.fontStyle !== undefined && { 'font-style': para.fontStyle }),
+    ...(para.lineHeight !== undefined && { 'line-height': para.lineHeight }),
+    ...(para.letterSpacing !== undefined && { 'letter-spacing': para.letterSpacing }),
+    ...(para.textDecoration !== undefined && { 'text-decoration': para.textDecoration }),
+    ...(para.textTransform !== undefined && { 'text-transform': para.textTransform }),
+    ...(para.fills !== undefined && { fills: para.fills }),
+    children: para.ranges.map((range) => ({
+      text: range.text,
+      ...(range.fontFamily !== undefined && { 'font-family': range.fontFamily }),
+      ...(range.fontSize !== undefined && { 'font-size': range.fontSize }),
+      ...(range.fontWeight !== undefined && { 'font-weight': range.fontWeight }),
+      ...(range.fontStyle !== undefined && { 'font-style': range.fontStyle }),
+      ...(range.lineHeight !== undefined && { 'line-height': range.lineHeight }),
+      ...(range.letterSpacing !== undefined && { 'letter-spacing': range.letterSpacing }),
+      ...(range.textDecoration !== undefined && { 'text-decoration': range.textDecoration }),
+      ...(range.textTransform !== undefined && { 'text-transform': range.textTransform }),
+      ...(range.fills !== undefined && { fills: range.fills }),
+    })),
+  }
+}
+
 export function text(
   params: BaseParams & {
-    characters: string
+    /**
+     * Rich text mode: supply an array of paragraphs (each with its own style and text
+     * ranges). When present, `characters`/`fontFamily`/`fontSize`/`fontWeight`/`fillColor`
+     * are ignored. Paragraph-level style fields are inherited defaults for all ranges within
+     * that paragraph; individual ranges may override any of them.
+     */
+    paragraphs?: TextParagraph[]
+    /** Legacy mode: a single string of text across one paragraph. Used when `paragraphs` is absent. */
+    characters?: string
     fontFamily?: string
     fontSize?: string
     fontWeight?: string
     fillColor?: string
+    /**
+     * How the text box grows to fit its content. `"auto-width"` (default): box width expands
+     * as text grows. `"auto-height"`: width is fixed, height expands. `"fixed"`: both dimensions
+     * are fixed. Matches Penpot's `grow-type` wire field.
+     */
+    growType?: 'auto-width' | 'auto-height' | 'fixed'
+    /**
+     * Vertical alignment of the text block within its bounding box. Stored on the content's
+     * root node as `vertical-align`. Default: `"top"`.
+     */
+    verticalAlign?: 'top' | 'center' | 'bottom'
+    shadows?: Shadow[]
   },
 ): Record<string, unknown> {
   const {
@@ -354,33 +554,47 @@ export function text(
     parentId,
     frameId,
     layoutItem,
-    characters,
+    opacity,
+    hidden,
+    blocked,
+    blendMode,
+    paragraphs,
+    characters = '',
     fontFamily = 'Inter',
     fontSize = '14',
     fontWeight = '400',
     fillColor = '#000000',
+    growType = 'auto-width',
+    verticalAlign = 'top',
+    shadows,
   } = params
 
-  const fills: Fill[] = [{ 'fill-color': fillColor, 'fill-opacity': 1 }]
+  let fills: Fill[]
+  let content: Record<string, unknown>
 
-  return {
-    id,
-    type: 'text',
-    name,
-    x,
-    y,
-    width,
-    height,
-    rotation,
-    'parent-id': parentId,
-    'frame-id': frameId,
-    ...selrectAndPoints({ x, y, width, height }, rotation),
-    ...transforms({ x, y, width, height }, rotation),
-    fills,
-    'grow-type': 'auto-width',
-    ...layoutItemAttrs(layoutItem),
-    content: {
+  if (paragraphs) {
+    // Rich text mode: build content from the paragraphs array.
+    // Shape-level fills default to the first range's fills, or the first paragraph's fills,
+    // or solid black — kept in sync with content so Penpot has a consistent fallback.
+    const firstParaFills = paragraphs[0]?.fills
+    const firstRangeFills = paragraphs[0]?.ranges[0]?.fills
+    fills = firstRangeFills ?? firstParaFills ?? [{ 'fill-color': '#000000', 'fill-opacity': 1 }]
+    content = {
       type: 'root',
+      ...(verticalAlign !== 'top' && { 'vertical-align': verticalAlign }),
+      children: [
+        {
+          type: 'paragraph-set',
+          children: paragraphs.map(buildTextParagraphNode),
+        },
+      ],
+    }
+  } else {
+    // Legacy single-paragraph mode: same structure as before, fully backward-compatible.
+    fills = [{ 'fill-color': fillColor, 'fill-opacity': 1 }]
+    content = {
+      type: 'root',
+      ...(verticalAlign !== 'top' && { 'vertical-align': verticalAlign }),
       children: [
         {
           type: 'paragraph-set',
@@ -404,7 +618,334 @@ export function text(
           ],
         },
       ],
-    },
+    }
+  }
+
+  return {
+    id,
+    type: 'text',
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    fills,
+    shadows: shadows ?? [],
+    'grow-type': growType,
+    ...layoutItemAttrs(layoutItem),
+    content,
+  }
+}
+
+/**
+ * Returns [min, max] values along a single axis for a cubic Bézier from p0 through
+ * control points p1/p2 to p3, by finding derivative roots (where dB/dt = 0) and
+ * evaluating the curve at t=0, t=1, and any roots in (0,1). Used by `pathBoundingBox`.
+ */
+function bezierBounds(p0: number, p1: number, p2: number, p3: number): [number, number] {
+  // dB/dt = 3[at² + bt + c], coefficients:
+  const a = -p0 + 3 * p1 - 3 * p2 + p3
+  const b = 2 * (p0 - 2 * p1 + p2)
+  const c = p1 - p0
+
+  const ts: number[] = [0, 1]
+  if (Math.abs(a) > 1e-12) {
+    const disc = b * b - 4 * a * c
+    if (disc >= 0) {
+      const sqrtDisc = Math.sqrt(disc)
+      ts.push((-b + sqrtDisc) / (2 * a), (-b - sqrtDisc) / (2 * a))
+    }
+  } else if (Math.abs(b) > 1e-12) {
+    ts.push(-c / b)
+  }
+
+  const at = (t: number) =>
+    (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t ** 2 * p2 + t ** 3 * p3
+  const vals = ts.filter((t) => t >= 0 && t <= 1).map(at)
+  return [Math.min(...vals), Math.max(...vals)]
+}
+
+/**
+ * Computes the tight axis-aligned bounding box of a sequence of path commands.
+ * Line-to/move-to extrema are exact; curve-to extrema use `bezierBounds` (real
+ * cubic roots, not just control-point envelopes). Returns a 1×1 box at the origin
+ * for an empty/degenerate path rather than throwing.
+ */
+function pathBoundingBox(content: PathCommand[]): { x: number; y: number; width: number; height: number } {
+  const xs: number[] = []
+  const ys: number[] = []
+  let curX = 0
+  let curY = 0
+
+  for (const cmd of content) {
+    if (cmd.command === 'move-to' || cmd.command === 'line-to') {
+      xs.push(cmd.params.x)
+      ys.push(cmd.params.y)
+      curX = cmd.params.x
+      curY = cmd.params.y
+    } else if (cmd.command === 'curve-to') {
+      const { x, y, c1x, c1y, c2x, c2y } = cmd.params
+      const [minX, maxX] = bezierBounds(curX, c1x, c2x, x)
+      const [minY, maxY] = bezierBounds(curY, c1y, c2y, y)
+      xs.push(minX, maxX)
+      ys.push(minY, maxY)
+      curX = x
+      curY = y
+    }
+    // close-path: no new extrema
+  }
+
+  if (xs.length === 0) return { x: 0, y: 0, width: 1, height: 1 }
+  const x = Math.min(...xs)
+  const y = Math.min(...ys)
+  return { x, y, width: Math.max(Math.max(...xs) - x, 1), height: Math.max(Math.max(...ys) - y, 1) }
+}
+
+/** Ellipse/circle shape. Penpot uses type `circle` internally; the bounding rect (x, y, width, height)
+ * defines the ellipse, so width === height gives a true circle. Same fill/stroke/shadow support as
+ * `rect`; no corner radii (they don't apply to ellipses). */
+export function circle(
+  params: BaseParams & {
+    fills?: Fill[]
+    strokes?: Stroke[]
+    shadows?: Shadow[]
+  },
+): Record<string, unknown> {
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, fills, strokes, shadows } = params
+  return {
+    id,
+    type: 'circle',
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    fills: fills ?? [],
+    strokes: strokes ?? [],
+    shadows: shadows ?? [],
+    ...layoutItemAttrs(layoutItem),
+  }
+}
+
+/**
+ * Free-form path shape. The caller supplies `content` (an array of `PathCommand`s);
+ * `x`/`y`/`width`/`height` and all geometry fields are derived automatically from the
+ * path's bounding box via `pathBoundingBox` (tight bounds, not just control-point
+ * envelopes for curves). Supports fills, strokes, and shadows like `rect`/`circle`.
+ *
+ * To build an ellipse as a path (e.g. as a boolean operand), approximate it with four
+ * cubic Bézier curves using the standard k≈0.5523 constant.
+ */
+export function path(
+  params: Omit<BaseParams, 'x' | 'y' | 'width' | 'height'> & {
+    content: PathCommand[]
+    fills?: Fill[]
+    strokes?: Stroke[]
+    shadows?: Shadow[]
+  },
+): Record<string, unknown> {
+  const { id = randomUUID(), name, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, content, fills, strokes, shadows } = params
+  const bbox = pathBoundingBox(content)
+  const { x, y, width, height } = bbox
+  return {
+    id,
+    type: 'path',
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    fills: fills ?? [],
+    strokes: strokes ?? [],
+    shadows: shadows ?? [],
+    content,
+    ...layoutItemAttrs(layoutItem),
+  }
+}
+
+export type BoolType = 'union' | 'difference' | 'intersection' | 'exclusion'
+
+/**
+ * Boolean-operation shape. Penpot uses type `bool` with a `bool-type` field for the
+ * operation. Children (added via separate `add-obj` changes with `parent-id` pointing at
+ * this shape) are the operands; Penpot's editor computes the visual result path from them
+ * when the file is opened. The `content` field (the cached result path) is intentionally
+ * left empty here — the same way a newly drawn bool in the UI starts before Penpot's
+ * browser-side WASM geometry engine has run. Setting `shapes: []` is also correct: Penpot's
+ * server-side `add-obj` handler appends each child's id to the parent's `shapes` array
+ * when the child's `parent-id` points here (exactly as it does for `frame`).
+ *
+ * Caller must supply `x`/`y`/`width`/`height` (typically the bounding box of the children).
+ */
+export function bool(
+  params: BaseParams & {
+    boolType: BoolType
+    fills?: Fill[]
+    strokes?: Stroke[]
+    shadows?: Shadow[]
+  },
+): Record<string, unknown> {
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, boolType, fills, strokes, shadows } = params
+  return {
+    id,
+    type: 'bool',
+    'bool-type': boolType,
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    fills: fills ?? [],
+    strokes: strokes ?? [],
+    shadows: shadows ?? [],
+    shapes: [],
+    content: [],
+    ...layoutItemAttrs(layoutItem),
+  }
+}
+
+/**
+ * Group shape. Groups are transparent containers — no fills, strokes, or corner radii of
+ * their own. `shapes` carries the ordered child ids. Geometry (x/y/width/height) is normally
+ * derived from the children's visible bounding box by Penpot's editor; updating a group's
+ * own geometry via `add-obj` only changes the group's stored bounding-box representation —
+ * it does NOT move the children (for that, translate each child separately or use
+ * `penpot_align_shapes`/`penpot_distribute_shapes`).
+ */
+export function group(
+  params: BaseParams & { shapes?: string[] },
+): Record<string, unknown> {
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, shapes } = params
+  return {
+    id,
+    type: 'group',
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    shapes: shapes ?? [],
+    ...layoutItemAttrs(layoutItem),
+  }
+}
+
+/** Metadata for an `image` shape — identifies the Penpot media object being displayed. */
+export type ImageMetadata = {
+  /** UUID of the Penpot media object (returned by `upload-file-media-object`). */
+  id: string
+  /** Pixel width of the source image (used for aspect-ratio calculations). */
+  width: number
+  /** Pixel height of the source image. */
+  height: number
+  /** MIME type, e.g. `"image/png"` or `"image/jpeg"`. */
+  mtype?: string
+}
+
+/**
+ * Image shape. Penpot uses `type: "image"` with a `metadata` field that identifies the
+ * uploaded media object. The shape's `x`/`y`/`width`/`height` control the placement and
+ * display size on the canvas; the media object's own dimensions (in `metadata`) are used
+ * for aspect-ratio preservation when the user holds Shift while resizing in the UI.
+ *
+ * The media object must already exist in Penpot (created via `upload-file-media-object`
+ * or `create-file-media-object-from-url`). Use `penpot_upload_media` to get the `id`
+ * and then pass it here as `metadata.id`.
+ */
+export function image(
+  params: BaseParams & { metadata: ImageMetadata },
+): Record<string, unknown> {
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, metadata } = params
+  return {
+    id,
+    type: 'image',
+    name,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    'parent-id': parentId,
+    'frame-id': frameId,
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
+    ...(opacity !== undefined && { opacity }),
+    ...(hidden !== undefined && { hidden }),
+    ...(blocked !== undefined && { blocked }),
+    ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    fills: [],
+    strokes: [],
+    shadows: [],
+    r1: 0,
+    r2: 0,
+    r3: 0,
+    r4: 0,
+    metadata,
+    ...layoutItemAttrs(layoutItem),
+  }
+}
+
+/**
+ * Computes the geometry fields (`selrect`, `points`, `transform`, `transform-inverse`) for a
+ * shape with the given bounding rectangle and rotation — the same side-effects applied by all
+ * shape builders internally. Used by `buildUpdateChange` in `content.ts` to correctly
+ * reconstruct geometry for shape types that have no dedicated builder (svg-raw, etc.)
+ * when their position or size is patched.
+ */
+export function computeShapeGeometry(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation: number,
+): Record<string, unknown> {
+  return {
+    ...selrectAndPoints({ x, y, width, height }, rotation),
+    ...transforms({ x, y, width, height }, rotation),
   }
 }
 
@@ -425,16 +966,166 @@ export type EditableShapeFields = {
   width: number
   height: number
   rotation: number
+  opacity?: number
+  hidden?: boolean
+  blocked?: boolean
+  blendMode?: string
   fills?: Fill[]
   strokes?: Stroke[]
+  shadows?: Shadow[]
   r1?: number
   r2?: number
   r3?: number
   r4?: number
+  /** Legacy single-paragraph text fields (from the first paragraph's first leaf). */
   characters?: string
   fontFamily?: string
   fontSize?: string
   fontWeight?: string
+  /**
+   * All paragraphs extracted from the text shape's content tree, in the same format
+   * `text()` accepts for its `paragraphs` parameter. Populated for text shapes;
+   * undefined for all other types. Used by `buildUpdateChange` to preserve existing
+   * rich text when a geometry-only patch is applied.
+   */
+  paragraphs?: TextParagraph[]
+  /**
+   * Text shape grow mode (`"auto-width"` | `"auto-height"` | `"fixed"`).
+   * Populated for text shapes, undefined for others.
+   */
+  growType?: string
+  /**
+   * Vertical alignment of the text block within its box (`"top"` | `"center"` | `"bottom"`).
+   * Stored on the content root node; populated for text shapes, undefined for others.
+   */
+  verticalAlign?: string
+}
+
+/**
+ * Converts fills from the camelCase format returned by `get-file` into the kebab-case
+ * `Fill[]` format the shape builders expect. Shared by `extractEditableFields`
+ * (for shape-level fills) and `extractParagraphsFromContent` (for per-paragraph/range fills).
+ */
+function convertRawFills(
+  fillsRaw: Array<{
+    fillColor?: string
+    fillOpacity?: number
+    fillColorGradient?: {
+      type: 'linear' | 'radial'
+      startX: number
+      startY: number
+      endX: number
+      endY: number
+      width: number
+      stops: Array<{ color: string; opacity: number; offset: number }>
+    }
+    fillImage?: {
+      id: string
+      width: number
+      height: number
+      mtype: string
+      name?: string
+      keepAspectRatio?: boolean
+    }
+  }>,
+): Fill[] {
+  return fillsRaw.map((f): Fill => {
+    if (f.fillColorGradient) {
+      const g = f.fillColorGradient
+      return {
+        'fill-color-gradient': {
+          type: g.type,
+          'start-x': g.startX,
+          'start-y': g.startY,
+          'end-x': g.endX,
+          'end-y': g.endY,
+          width: g.width,
+          stops: g.stops,
+        },
+        ...(f.fillOpacity !== undefined ? { 'fill-opacity': f.fillOpacity } : {}),
+      }
+    }
+    if (f.fillImage) {
+      const img = f.fillImage
+      return {
+        'fill-image': {
+          id: img.id,
+          width: img.width,
+          height: img.height,
+          mtype: img.mtype,
+          ...(img.name !== undefined ? { name: img.name } : {}),
+          ...(img.keepAspectRatio !== undefined ? { 'keep-aspect-ratio': img.keepAspectRatio } : {}),
+        },
+        ...(f.fillOpacity !== undefined ? { 'fill-opacity': f.fillOpacity } : {}),
+      }
+    }
+    // Default: solid fill
+    return { 'fill-color': f.fillColor ?? '#000000', 'fill-opacity': f.fillOpacity ?? 1 }
+  })
+}
+
+/**
+ * Converts a text content tree as returned by `get-file` (camelCase keys) into our
+ * `TextParagraph[]` builder format (camelCase TypeScript fields, resolved `Fill[]`).
+ * Used by `extractEditableFields` so `buildUpdateChange` can preserve existing rich
+ * text when a geometry-only patch is applied.
+ */
+function extractParagraphsFromContent(content: unknown): TextParagraph[] {
+  type RawFillRef = Parameters<typeof convertRawFills>[0][number]
+  type RawLeaf = {
+    text?: string
+    fontFamily?: string
+    fontSize?: string
+    fontWeight?: string
+    fontStyle?: string
+    lineHeight?: string
+    letterSpacing?: string
+    textDecoration?: string
+    textTransform?: string
+    fills?: RawFillRef[]
+  }
+  type RawParagraph = RawLeaf & {
+    type?: string
+    textAlign?: string
+    children?: RawLeaf[]
+  }
+  type RawRoot = { children?: Array<{ children?: RawParagraph[] }> }
+
+  const c = content as RawRoot | undefined
+  const paragraphNodes = c?.children?.[0]?.children ?? []
+
+  return paragraphNodes
+    .filter((p) => p.type === 'paragraph' || p.type === undefined)
+    .map((para): TextParagraph => {
+      const paraFillsRaw = (para.fills ?? []) as RawFillRef[]
+      return {
+        ...(para.textAlign !== undefined && { textAlign: para.textAlign as TextParagraph['textAlign'] }),
+        ...(para.fontFamily !== undefined && { fontFamily: para.fontFamily }),
+        ...(para.fontSize !== undefined && { fontSize: para.fontSize }),
+        ...(para.fontWeight !== undefined && { fontWeight: para.fontWeight }),
+        ...(para.fontStyle !== undefined && { fontStyle: para.fontStyle }),
+        ...(para.lineHeight !== undefined && { lineHeight: para.lineHeight }),
+        ...(para.letterSpacing !== undefined && { letterSpacing: para.letterSpacing }),
+        ...(para.textDecoration !== undefined && { textDecoration: para.textDecoration }),
+        ...(para.textTransform !== undefined && { textTransform: para.textTransform }),
+        ...(paraFillsRaw.length > 0 && { fills: convertRawFills(paraFillsRaw) }),
+        ranges: (para.children ?? []).map((leaf): TextRange => {
+          const leafFillsRaw = (leaf.fills ?? []) as RawFillRef[]
+          return {
+            text: leaf.text ?? '',
+            ...(leaf.fontFamily !== undefined && { fontFamily: leaf.fontFamily }),
+            ...(leaf.fontSize !== undefined && { fontSize: leaf.fontSize }),
+            ...(leaf.fontWeight !== undefined && { fontWeight: leaf.fontWeight }),
+            ...(leaf.fontStyle !== undefined && { fontStyle: leaf.fontStyle }),
+            ...(leaf.lineHeight !== undefined && { lineHeight: leaf.lineHeight }),
+            ...(leaf.letterSpacing !== undefined && { letterSpacing: leaf.letterSpacing }),
+            ...(leaf.textDecoration !== undefined && { textDecoration: leaf.textDecoration }),
+            ...(leaf.textTransform !== undefined && { textTransform: leaf.textTransform }),
+            ...(leafFillsRaw.length > 0 && { fills: convertRawFills(leafFillsRaw) }),
+          }
+        }),
+      }
+    })
 }
 
 /**
@@ -443,17 +1134,14 @@ export type EditableShapeFields = {
  * subset above. `fills`/`strokes` are read from their camelCase inner keys
  * (`fillColor`/`fillOpacity`, `strokeColor`/etc.) — verified live against a real
  * instance's `get-file` response during the components/variants investigation.
- * Text content is read from the first paragraph/leaf of `content`, matching the
- * single-paragraph structure `text()` always produces; a shape with richer
- * multi-paragraph content (e.g. hand-edited in the Penpot UI) will only have its
- * first paragraph's text/font reflected here.
+ * For text shapes, all paragraphs and ranges are extracted into `paragraphs` (full
+ * fidelity round-trip); the legacy `characters`/`fontFamily`/`fontSize`/`fontWeight`
+ * fields are populated from the first paragraph's first leaf for backward compat.
  */
 export function extractEditableFields(shape: ShapeNode): EditableShapeFields {
-  const fillsRaw = (shape.fills as Array<{ fillColor: string; fillOpacity: number }> | undefined) ?? []
-  const fills: Fill[] | undefined =
-    fillsRaw.length > 0
-      ? fillsRaw.map((f) => ({ 'fill-color': f.fillColor, 'fill-opacity': f.fillOpacity }))
-      : undefined
+  type RawFill = Parameters<typeof convertRawFills>[0][number]
+  const fillsRaw = (shape.fills as RawFill[] | undefined) ?? []
+  const fills: Fill[] | undefined = fillsRaw.length > 0 ? convertRawFills(fillsRaw) : undefined
 
   const strokesRaw =
     (shape.strokes as
@@ -476,11 +1164,40 @@ export function extractEditableFields(shape: ShapeNode): EditableShapeFields {
         }))
       : undefined
 
+  const shadowsRaw =
+    (shape.shadows as
+      | Array<{
+          style: Shadow['style']
+          offsetX: number
+          offsetY: number
+          blur: number
+          spread: number
+          color: { color: string; opacity: number }
+          hidden: boolean
+        }>
+      | undefined) ?? []
+  const shadows: Shadow[] | undefined =
+    shadowsRaw.length > 0
+      ? shadowsRaw.map((s) => ({
+          style: s.style,
+          'offset-x': s.offsetX,
+          'offset-y': s.offsetY,
+          blur: s.blur,
+          spread: s.spread,
+          color: s.color,
+          hidden: s.hidden,
+        }))
+      : undefined
+
   const content = shape.content as
-    | { children?: Array<{ children?: Array<{ children?: Array<{ text?: string }>; fontFamily?: string; fontSize?: string; fontWeight?: string }> }> }
+    | { verticalAlign?: string; children?: Array<{ children?: Array<{ children?: Array<{ text?: string }>; fontFamily?: string; fontSize?: string; fontWeight?: string }> }> }
     | undefined
   const paragraph = content?.children?.[0]?.children?.[0]
   const leaf = paragraph?.children?.[0]
+
+  // Extract all paragraphs for rich text round-trip fidelity.
+  const paragraphs =
+    shape.type === 'text' && content !== undefined ? extractParagraphsFromContent(content) : undefined
 
   return {
     name: shape.name as string,
@@ -489,16 +1206,26 @@ export function extractEditableFields(shape: ShapeNode): EditableShapeFields {
     width: shape.width as number,
     height: shape.height as number,
     rotation: (shape.rotation as number) ?? 0,
+    opacity: shape.opacity as number | undefined,
+    hidden: shape.hidden as boolean | undefined,
+    blocked: shape.blocked as boolean | undefined,
+    blendMode: (shape as Record<string, unknown>)['blend-mode'] as string | undefined,
     fills,
     strokes,
+    shadows,
     r1: shape.r1 as number | undefined,
     r2: shape.r2 as number | undefined,
     r3: shape.r3 as number | undefined,
     r4: shape.r4 as number | undefined,
+    // Legacy text fields from first paragraph/leaf:
     characters: leaf?.text,
     fontFamily: paragraph?.fontFamily,
     fontSize: paragraph?.fontSize,
     fontWeight: paragraph?.fontWeight,
+    // Rich text round-trip:
+    paragraphs,
+    growType: ((shape as Record<string, unknown>)['grow-type'] ?? (shape as Record<string, unknown>).growType) as string | undefined,
+    verticalAlign: content?.verticalAlign,
   }
 }
 
@@ -523,10 +1250,229 @@ export function addObj(pageId: string, obj: Record<string, unknown>): AddObjChan
   }
 }
 
+export type DelObjChange = { type: 'del-obj'; id: string; 'page-id': string }
+
+/** Wraps a shape id as a `del-obj` change, removing it (and, per Penpot's own semantics, its descendants). */
+export function delObj(pageId: string, shapeId: string): DelObjChange {
+  return { type: 'del-obj', id: shapeId, 'page-id': pageId }
+}
+
+/**
+ * Wraps a shape object exactly as `get-file` returned it (camelCase) back into an
+ * `add-obj` change, for restoring a shape verbatim to prior state — e.g. recreating a
+ * shape deleted after a checkpoint, or overwriting a shape's current fields back to a
+ * snapshotted version. Unlike `buildUpdateChange`/`buildReorderChange` in tools/content.ts
+ * (which rebuild an object from scratch via `rect`/`frame`/`text` and only need to strip
+ * stale camelCase duplicates), this doesn't reconstruct anything — it round-trips the
+ * whole object as-is, so `transform-inverse`/`hide-fill-on-export` must be explicitly
+ * renamed from their camelCase form (not just dropped), matching the same fields
+ * `penpot_reorder_shapes` was found to require live (see the note there): dropping
+ * `transform-inverse` entirely is rejected by Penpot's malli schema (`nil` where a
+ * matrix is required).
+ */
+export function restoreShapeAsAddObj(pageId: string, shape: ShapeNode): AddObjChange {
+  const merged: Record<string, unknown> = {
+    ...shape,
+    'parent-id': (shape.parentId as string | undefined) ?? (shape['parent-id'] as string),
+    'frame-id': (shape.frameId as string | undefined) ?? (shape['frame-id'] as string),
+    'transform-inverse': shape.transformInverse ?? shape['transform-inverse'],
+    'hide-fill-on-export': shape.hideFillOnExport ?? shape['hide-fill-on-export'] ?? false,
+  }
+  delete merged.parentId
+  delete merged.frameId
+  delete merged.transformInverse
+  delete merged.hideFillOnExport
+  delete merged.growType
+  return addObj(pageId, merged)
+}
+
+/** Where a shape moves to within its parent's `shapes` (z-order) array — see `reorderChildren`. */
+export type ReorderAction =
+  | { type: 'front' }
+  | { type: 'back' }
+  | { type: 'forward' }
+  | { type: 'backward' }
+  | { type: 'before'; targetId: string }
+  | { type: 'after'; targetId: string }
+
+/**
+ * Computes a parent's new child-order array after moving `shapeId` per `action`,
+ * matching Penpot's own z-order semantics: later entries in `shapes` render on top
+ * (`front` moves an id to the end of the array, `back` to the start). `forward`/
+ * `backward` swap with the next/previous sibling; a shape already at that end is
+ * left untouched (no-op) rather than throwing, matching Penpot's own UI behavior
+ * when "Bring to front" etc. is pressed on a shape already at the front/back.
+ * `before`/`after` place `shapeId` immediately before/after `targetId`.
+ *
+ * This only computes the new array — the caller still needs to persist it (see
+ * `penpot_reorder_shapes` in tools/content.ts, which round-trips the parent shape
+ * object through `add-obj` the same way `penpot_update_shapes` already does,
+ * rather than trusting the unverified `reorder-children` RPC change or the
+ * `mov-objects` RPC already found to be a silent no-op — see the note on
+ * `variantContainerAttrs` above).
+ */
+export function reorderChildren(currentOrder: string[], shapeId: string, action: ReorderAction): string[] {
+  const index = currentOrder.indexOf(shapeId)
+  if (index === -1) throw new Error(`reorderChildren: shape ${shapeId} is not a child of this parent`)
+
+  const withoutShape = currentOrder.filter((id) => id !== shapeId)
+
+  switch (action.type) {
+    case 'front':
+      return [...withoutShape, shapeId]
+    case 'back':
+      return [shapeId, ...withoutShape]
+    case 'forward': {
+      if (index === currentOrder.length - 1) return currentOrder
+      const next = index + 1
+      const result = [...currentOrder]
+      ;[result[index], result[next]] = [result[next]!, result[index]!]
+      return result
+    }
+    case 'backward': {
+      if (index === 0) return currentOrder
+      const prev = index - 1
+      const result = [...currentOrder]
+      ;[result[index], result[prev]] = [result[prev]!, result[index]!]
+      return result
+    }
+    case 'before': {
+      if (action.targetId === shapeId) {
+        throw new Error('reorderChildren: targetId must not be the same as shapeId')
+      }
+      const targetIndex = withoutShape.indexOf(action.targetId)
+      if (targetIndex === -1) {
+        throw new Error(`reorderChildren: target shape ${action.targetId} is not a child of this parent`)
+      }
+      return [...withoutShape.slice(0, targetIndex), shapeId, ...withoutShape.slice(targetIndex)]
+    }
+    case 'after': {
+      if (action.targetId === shapeId) {
+        throw new Error('reorderChildren: targetId must not be the same as shapeId')
+      }
+      const targetIndex = withoutShape.indexOf(action.targetId)
+      if (targetIndex === -1) {
+        throw new Error(`reorderChildren: target shape ${action.targetId} is not a child of this parent`)
+      }
+      return [...withoutShape.slice(0, targetIndex + 1), shapeId, ...withoutShape.slice(targetIndex + 1)]
+    }
+  }
+}
+
+/** The axis-aligned bounding box of one shape, keyed by id — the unit align/distribute operate on. */
+export type ShapeBox = { id: string; x1: number; y1: number; x2: number; y2: number }
+
+/** A translation to apply to one shape, keyed by id. Zero-delta entries are omitted by the callers below. */
+export type ShapeDelta = { id: string; dx: number; dy: number }
+
+export type AlignEdge = 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v'
+
+/**
+ * Computes the per-shape translation that aligns every box in `boxes` to a common edge/center,
+ * matching Penpot's own align actions. Horizontal edges (`left`/`right`/`center-h`) move shapes
+ * along x only; vertical edges (`top`/`bottom`/`center-v`) move along y only. The reference line
+ * is taken from the group's own bounding box (the min/max/mid across all boxes), so aligning e.g.
+ * `left` snaps every shape's left edge to the leftmost shape's left edge — never moving the group
+ * as a whole. Returns one `ShapeDelta` per box whose position actually changes (zero-delta boxes,
+ * i.e. shapes already on the reference line, are omitted).
+ */
+export function computeAlignment(boxes: ShapeBox[], edge: AlignEdge): ShapeDelta[] {
+  if (boxes.length < 2) throw new Error('computeAlignment: need at least 2 shapes to align')
+
+  const minX = Math.min(...boxes.map((b) => b.x1))
+  const maxX = Math.max(...boxes.map((b) => b.x2))
+  const minY = Math.min(...boxes.map((b) => b.y1))
+  const maxY = Math.max(...boxes.map((b) => b.y2))
+  const midX = (minX + maxX) / 2
+  const midY = (minY + maxY) / 2
+
+  const deltas: ShapeDelta[] = []
+  for (const box of boxes) {
+    let dx = 0
+    let dy = 0
+    switch (edge) {
+      case 'left':
+        dx = minX - box.x1
+        break
+      case 'right':
+        dx = maxX - box.x2
+        break
+      case 'center-h':
+        dx = midX - (box.x1 + box.x2) / 2
+        break
+      case 'top':
+        dy = minY - box.y1
+        break
+      case 'bottom':
+        dy = maxY - box.y2
+        break
+      case 'center-v':
+        dy = midY - (box.y1 + box.y2) / 2
+        break
+    }
+    if (dx !== 0 || dy !== 0) deltas.push({ id: box.id, dx, dy })
+  }
+  return deltas
+}
+
+export type DistributeAxis = 'horizontal' | 'vertical'
+
+/**
+ * Computes the per-shape translation that distributes every box in `boxes` so the gaps BETWEEN
+ * adjacent shapes are equal along `axis`, matching Penpot's own "distribute horizontal spacing" /
+ * "distribute vertical spacing" actions. The two outermost shapes (by leading edge, then trailing
+ * edge) stay put; the shapes in between slide so every gap equals the total free space divided by
+ * the number of gaps. Free space can be negative (overlapping shapes), in which case they're spread
+ * to an even negative overlap rather than throwing. Needs at least 3 shapes (fewer has nothing to
+ * distribute). Returns one `ShapeDelta` per box that actually moves (the two ends, and any interior
+ * shape already evenly spaced, are omitted).
+ */
+export function computeDistribution(boxes: ShapeBox[], axis: DistributeAxis): ShapeDelta[] {
+  if (boxes.length < 3) throw new Error('computeDistribution: need at least 3 shapes to distribute')
+
+  const horizontal = axis === 'horizontal'
+  const lead = (b: ShapeBox) => (horizontal ? b.x1 : b.y1)
+  const trail = (b: ShapeBox) => (horizontal ? b.x2 : b.y2)
+  const size = (b: ShapeBox) => trail(b) - lead(b)
+
+  // Sort by leading edge (tie-break on trailing edge) so the outermost shapes are the endpoints.
+  const sorted = [...boxes].sort((a, b) => lead(a) - lead(b) || trail(a) - trail(b))
+  const first = sorted[0]!
+  const last = sorted[sorted.length - 1]!
+
+  const span = trail(last) - lead(first)
+  const totalSize = sorted.reduce((sum, b) => sum + size(b), 0)
+  const gap = (span - totalSize) / (sorted.length - 1)
+
+  const deltas: ShapeDelta[] = []
+  let cursor = lead(first)
+  for (const box of sorted) {
+    const targetLead = cursor
+    const delta = targetLead - lead(box)
+    if (delta !== 0) {
+      deltas.push({ id: box.id, dx: horizontal ? delta : 0, dy: horizontal ? 0 : delta })
+    }
+    cursor = targetLead + size(box) + gap
+  }
+  return deltas
+}
+
 export type AddPageChange = { type: 'add-page'; id: string; name: string }
 
 export function addPage(name: string, id: string = randomUUID()): AddPageChange {
   return { type: 'add-page', id, name }
+}
+
+export type RenamePageChange = { type: 'rename-page'; id: string; name: string }
+
+export function renamePage(id: string, name: string): RenamePageChange {
+  return { type: 'rename-page', id, name }
+}
+
+export type DelPageChange = { type: 'del-page'; id: string }
+
+export function delPage(id: string): DelPageChange {
+  return { type: 'del-page', id }
 }
 
 /**
@@ -739,5 +1685,103 @@ export function cloneComponentInstance(params: {
   }
 
   cloneNode(mainRootId, parentId, frameId, true)
+  return changes
+}
+
+/**
+ * Deep-clones a plain shape tree (root + descendants, looked up by id in `objects`)
+ * into a fresh copy with new ids, offset by `(dx, dy)`, optionally reparented under
+ * `parentId`/`frameId` (defaults to the original root's own parent/frame, i.e. a
+ * duplicate placed alongside the source). Unlike `cloneComponentInstance`, this
+ * does NOT tag the copy as a component instance — no `shape-ref`/`component-id`/
+ * `component-root`/`main-instance` are set or carried over, since this is plain
+ * shape duplication (e.g. Penpot's own Ctrl+D), not a component copy. If the
+ * source root itself happens to carry component/variant tags (it's a component's
+ * main instance or an existing instance), those tags ARE carried over unchanged on
+ * the clone, since blanking them would silently detach the duplicate from a
+ * component it was actually meant to stay linked to; use
+ * `penpot_add_component_instance` instead if a fresh, independent instance is
+ * wanted. Returns one `add-obj` change per cloned node, in parent-before-child order.
+ */
+export function cloneShapes(params: {
+  pageId: string
+  objects: Record<string, ShapeNode>
+  rootId: string
+  parentId?: string
+  frameId?: string
+  dx: number
+  dy: number
+}): AddObjChange[] {
+  const { pageId, objects, rootId, dx, dy } = params
+  const changes: AddObjChange[] = []
+
+  const sourceRoot = objects[rootId]
+  if (!sourceRoot) throw new Error(`Shape ${rootId} not found in file`)
+  const parentId = params.parentId ?? (sourceRoot['parent-id'] as string | undefined) ?? (sourceRoot.parentId as string)
+  const frameId = params.frameId ?? (sourceRoot['frame-id'] as string | undefined) ?? (sourceRoot.frameId as string)
+
+  function cloneNode(sourceId: string, newParentId: string, newFrameId: string, newId: string = randomUUID()): string {
+    const source = objects[sourceId]
+    if (!source) throw new Error(`Shape ${sourceId} not found in file`)
+
+    const obj: Record<string, unknown> = {
+      ...source,
+      id: newId,
+      x: (source.x as number) + dx,
+      y: (source.y as number) + dy,
+      'parent-id': newParentId,
+      'frame-id': newFrameId,
+    }
+    // Drop camelCase duplicates from the source (get-file returns camelCase; add-obj needs kebab-case).
+    delete obj.parentId
+    delete obj.frameId
+    delete obj.transformInverse
+
+    // Rotation matrices are pivot-relative; a pure translation shifts the pivot by (dx, dy)
+    // while the rotation part (a, b, c, d) is unchanged.
+    const transform = (source.transform as Matrix) ?? IDENTITY_MATRIX
+    const transformInverse =
+      (source.transformInverse as Matrix) ?? (source['transform-inverse'] as Matrix) ?? IDENTITY_MATRIX
+    obj.transform = { ...transform, e: transform.e + dx, f: transform.f + dy }
+    obj['transform-inverse'] = { ...transformInverse, e: transformInverse.e - dx, f: transformInverse.f - dy }
+
+    const selrect = source.selrect as Rect & { x1: number; y1: number; x2: number; y2: number }
+    obj.selrect = {
+      x: selrect.x1 + dx,
+      y: selrect.y1 + dy,
+      width: selrect.width,
+      height: selrect.height,
+      x1: selrect.x1 + dx,
+      y1: selrect.y1 + dy,
+      x2: selrect.x2 + dx,
+      y2: selrect.y2 + dy,
+    }
+    const points = (source.points as Point[]) ?? []
+    obj.points = points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+
+    const childIds = source.shapes ?? []
+    const isFrame = source.type === 'frame'
+    // Pre-compute the children's new ids so `obj.shapes` is correct, but don't recurse into
+    // them (i.e. don't push their add-obj changes) until after this node's own change is
+    // pushed, so `changes` comes out parent-before-child.
+    const childNewIds = childIds.map(() => randomUUID())
+    obj.shapes = childNewIds
+
+    changes.push({
+      type: 'add-obj',
+      id: newId,
+      'page-id': pageId,
+      'frame-id': newFrameId,
+      'parent-id': newParentId,
+      obj,
+    })
+
+    childIds.forEach((childId, i) => {
+      cloneNode(childId, newId, isFrame ? newId : newFrameId, childNewIds[i]!)
+    })
+    return newId
+  }
+
+  cloneNode(rootId, parentId, frameId)
   return changes
 }
