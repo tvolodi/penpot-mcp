@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { PenpotRpcClient, PenpotRpcError } from '../../src/rpc-client.js'
+import { PenpotRpcClient, PenpotRpcError, PenpotStaleWriteError } from '../../src/rpc-client.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +61,35 @@ describe('PenpotRpcError', () => {
     expect(new PenpotRpcError('x', 400, null).body).toBeNull()
     expect(new PenpotRpcError('x', 400, 'plain text').body).toBe('plain text')
     expect(new PenpotRpcError('x', 400, { code: 42 }).body).toEqual({ code: 42 })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PenpotStaleWriteError
+// ---------------------------------------------------------------------------
+
+describe('PenpotStaleWriteError', () => {
+  const fakeResult = { revn: 42, lagged: [{ id: 'c1', revn: 41, fileId: 'f', sessionId: 's', changes: [] }] }
+
+  it('is an instance of Error', () => {
+    expect(new PenpotStaleWriteError(1, fakeResult)).toBeInstanceOf(Error)
+  })
+
+  it('exposes laggedCount and result', () => {
+    const err = new PenpotStaleWriteError(3, fakeResult)
+    expect(err.laggedCount).toBe(3)
+    expect(err.result).toBe(fakeResult)
+  })
+
+  it('includes laggedCount and new revn in the message', () => {
+    const err = new PenpotStaleWriteError(2, fakeResult)
+    expect(err.message).toContain('2 concurrent change-set(s)')
+    expect(err.message).toContain('revn: 42')
+  })
+
+  it('mentions re-fetching in the message', () => {
+    const err = new PenpotStaleWriteError(1, fakeResult)
+    expect(err.message).toContain('penpot_get_file_snapshot')
   })
 })
 
@@ -249,6 +278,67 @@ describe('PenpotRpcClient', () => {
       fetchMock.mockResolvedValueOnce(mockResponse(204, ''))
       const result = await client.deleteFile('file-abc')
       expect(result).toEqual({ deleted: 'file-abc' })
+    })
+  })
+
+  // --- updateFile / stale-write detection ---
+
+  describe('updateFile stale-write detection', () => {
+    const cleanResult = { revn: 10, lagged: [] }
+    const laggedResult = {
+      revn: 12,
+      lagged: [
+        { id: 'cs1', revn: 11, fileId: 'file-abc', sessionId: 'other-session', changes: [] },
+      ],
+    }
+
+    it('returns the result when lagged is empty (no concurrent edits)', async () => {
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(cleanResult)))
+      const result = await client.updateFile('file-abc', 9, 0, [])
+      expect(result).toEqual(cleanResult)
+    })
+
+    it('throws PenpotStaleWriteError when lagged is non-empty', async () => {
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(laggedResult)))
+      const err = await client.updateFile('file-abc', 9, 0, []).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(PenpotStaleWriteError)
+    })
+
+    it('PenpotStaleWriteError.laggedCount matches the number of lagged change-sets', async () => {
+      const multiLagged = {
+        revn: 15,
+        lagged: [
+          { id: 'cs1', revn: 11, fileId: 'f', sessionId: 's', changes: [] },
+          { id: 'cs2', revn: 12, fileId: 'f', sessionId: 's', changes: [] },
+          { id: 'cs3', revn: 13, fileId: 'f', sessionId: 's', changes: [] },
+        ],
+      }
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(multiLagged)))
+      const err = await client.updateFile('file-abc', 9, 0, []).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(PenpotStaleWriteError)
+      expect((err as PenpotStaleWriteError).laggedCount).toBe(3)
+    })
+
+    it('PenpotStaleWriteError.result carries the update-file response (including new revn)', async () => {
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(laggedResult)))
+      const err = await client.updateFile('file-abc', 9, 0, []).catch((e: unknown) => e)
+      expect((err as PenpotStaleWriteError).result.revn).toBe(12)
+    })
+
+    it('does not throw when lagged field is missing from the response', async () => {
+      // Older Penpot versions may omit the lagged field entirely.
+      const resultWithoutLagged = { revn: 5 }
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(resultWithoutLagged)))
+      await expect(client.updateFile('file-abc', 4, 0, [])).resolves.toEqual(resultWithoutLagged)
+    })
+
+    it('sends revn and vern in the POST body', async () => {
+      fetchMock.mockResolvedValueOnce(mockResponse(200, JSON.stringify(cleanResult)))
+      await client.updateFile('file-abc', 7, 3, [])
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      const body = JSON.parse(init.body as string) as Record<string, unknown>
+      expect(body['revn']).toBe(7)
+      expect(body['vern']).toBe(3)
     })
   })
 

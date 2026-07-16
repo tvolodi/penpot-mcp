@@ -18,6 +18,33 @@ export class PenpotRpcError extends Error {
   }
 }
 
+/**
+ * Thrown by `updateFile` when Penpot reports that changes from another session
+ * landed before ours (i.e. `lagged` in the `update-file` response is non-empty).
+ *
+ * The write DID succeed — Penpot applied our changes on top of the lagged ones —
+ * but the resulting file state may not be what was intended. The caller should
+ * re-fetch the file (`penpot_get_file_snapshot`) and verify the current state
+ * before making further edits.
+ *
+ * `result` contains the `update-file` response (including the new `revn`) so
+ * callers that can tolerate concurrent edits may inspect it rather than treating
+ * this as a hard failure.
+ */
+export class PenpotStaleWriteError extends Error {
+  constructor(
+    public readonly laggedCount: number,
+    public readonly result: UpdateFileResult,
+  ) {
+    super(
+      `Stale write detected: ${laggedCount} concurrent change-set(s) from another session ` +
+        `were applied before yours (new revn: ${result.revn}). ` +
+        `Your changes were applied on top — re-fetch the file with penpot_get_file_snapshot ` +
+        `and verify the current state before making further edits.`,
+    )
+  }
+}
+
 export class PenpotRpcClient {
   constructor(
     private readonly baseUrl: string,
@@ -148,6 +175,15 @@ export class PenpotRpcClient {
     return (await this.call('get-file', 'GET', { id: fileId })) as FileSummary
   }
 
+  /**
+   * Returns metadata for all library files (direct and transitive) linked to
+   * `fileId`. Does NOT include the library file's shape/component data — call
+   * `getFile(entry.id)` for each entry to retrieve components and page objects.
+   */
+  async getFileLibraries(fileId: string): Promise<FileLibraryEntry[]> {
+    return (await this.call('get-file-libraries', 'GET', { 'file-id': fileId })) as FileLibraryEntry[]
+  }
+
   async updateFile(
     fileId: string,
     revn: number,
@@ -155,13 +191,17 @@ export class PenpotRpcClient {
     changes: Change[],
     sessionId: string = crypto.randomUUID(),
   ): Promise<UpdateFileResult> {
-    return (await this.call('update-file', 'POST', {
+    const result = (await this.call('update-file', 'POST', {
       id: fileId,
       'session-id': sessionId,
       revn,
       vern,
       changes,
     })) as UpdateFileResult
+    if (result.lagged && result.lagged.length > 0) {
+      throw new PenpotStaleWriteError(result.lagged.length, result)
+    }
+    return result
   }
 
   // --- Media uploads ---
@@ -228,6 +268,102 @@ export class PenpotRpcClient {
     if (name) params['name'] = name
     return this.call('create-file-media-object-from-url', 'POST', params) as Promise<MediaObject>
   }
+
+  // --- Comments ---
+
+  getCommentThreads(fileId: string): Promise<CommentThread[]> {
+    return this.call('get-comment-threads', 'GET', { 'file-id': fileId }) as Promise<CommentThread[]>
+  }
+
+  getCommentThread(fileId: string, threadId: string): Promise<CommentThread> {
+    return this.call('get-comment-thread', 'GET', { 'file-id': fileId, id: threadId }) as Promise<CommentThread>
+  }
+
+  createCommentThread(
+    fileId: string,
+    pageId: string,
+    position: { x: number; y: number },
+    content: string,
+    frameId?: string,
+  ): Promise<CommentThread> {
+    const params: Record<string, unknown> = {
+      'file-id': fileId,
+      'page-id': pageId,
+      position,
+      content,
+    }
+    if (frameId) params['frame-id'] = frameId
+    return this.call('create-comment-thread', 'POST', params) as Promise<CommentThread>
+  }
+
+  async updateCommentThread(threadId: string, isResolved: boolean): Promise<{ updated: string; isResolved: boolean }> {
+    await this.call('update-comment-thread', 'POST', { id: threadId, 'is-resolved': isResolved })
+    return { updated: threadId, isResolved }
+  }
+
+  async deleteCommentThread(threadId: string): Promise<{ deleted: string }> {
+    await this.call('delete-comment-thread', 'POST', { id: threadId })
+    return { deleted: threadId }
+  }
+
+  getComments(threadId: string): Promise<Comment[]> {
+    return this.call('get-comments', 'GET', { 'thread-id': threadId }) as Promise<Comment[]>
+  }
+
+  createComment(threadId: string, content: string): Promise<Comment> {
+    return this.call('create-comment', 'POST', { 'thread-id': threadId, content }) as Promise<Comment>
+  }
+
+  async updateComment(commentId: string, content: string): Promise<{ updated: string }> {
+    await this.call('update-comment', 'POST', { id: commentId, content })
+    return { updated: commentId }
+  }
+
+  async deleteComment(commentId: string): Promise<{ deleted: string }> {
+    await this.call('delete-comment', 'POST', { id: commentId })
+    return { deleted: commentId }
+  }
+
+  // --- File snapshots (version history) ---
+
+  listFileSnapshots(fileId: string): Promise<FileSnapshot[]> {
+    return this.call('get-file-snapshots', 'GET', { 'file-id': fileId }) as Promise<FileSnapshot[]>
+  }
+
+  getFileSnapshotData(fileId: string, snapshotId: string): Promise<unknown> {
+    return this.call('get-file-snapshot', 'GET', { 'file-id': fileId, id: snapshotId })
+  }
+
+  createFileSnapshot(fileId: string, label?: string): Promise<FileSnapshot> {
+    const params: Record<string, unknown> = { 'file-id': fileId }
+    if (label !== undefined) params['label'] = label
+    return this.call('create-file-snapshot', 'POST', params) as Promise<FileSnapshot>
+  }
+
+  async restoreFileSnapshot(fileId: string, snapshotId: string): Promise<{ restored: string }> {
+    await this.call('restore-file-snapshot', 'POST', { 'file-id': fileId, id: snapshotId })
+    return { restored: snapshotId }
+  }
+
+  async renameFileSnapshot(snapshotId: string, label: string): Promise<{ updated: string }> {
+    await this.call('update-file-snapshot', 'POST', { id: snapshotId, label })
+    return { updated: snapshotId }
+  }
+
+  async deleteFileSnapshot(snapshotId: string): Promise<{ deleted: string }> {
+    await this.call('delete-file-snapshot', 'POST', { id: snapshotId })
+    return { deleted: snapshotId }
+  }
+
+  async lockFileSnapshot(snapshotId: string): Promise<{ locked: string }> {
+    await this.call('lock-file-snapshot', 'POST', { id: snapshotId })
+    return { locked: snapshotId }
+  }
+
+  async unlockFileSnapshot(snapshotId: string): Promise<{ unlocked: string }> {
+    await this.call('unlock-file-snapshot', 'POST', { id: snapshotId })
+    return { unlocked: snapshotId }
+  }
 }
 
 /**
@@ -252,6 +388,21 @@ export type FileComponent = {
   mainInstancePage: string
   variantId?: string
   variantProperties?: Array<{ name: string; value: string }>
+}
+
+/**
+ * Metadata about a file that is linked as a shared library to another file.
+ * Returned by `get-file-libraries`; does NOT include the file's shape/component
+ * data — call `getFile(id)` to get the full data for a specific library.
+ */
+export type FileLibraryEntry = {
+  id: string
+  name: string
+  revn: number
+  vern: number
+  isShared: boolean
+  /** True when this library is a transitive dependency (not directly linked). */
+  isIndirect: boolean
 }
 
 export type FontVariant = {
@@ -284,4 +435,69 @@ export type Change = Record<string, unknown>
 export type UpdateFileResult = {
   revn: number
   lagged: Array<{ id: string; revn: number; fileId: string; sessionId: string; changes: Change[] }>
+}
+
+/**
+ * A Penpot comment thread — a pinned annotation on a canvas position.
+ * Returned by `get-comment-threads` and `create-comment-thread`.
+ */
+export type CommentThread = {
+  id: string
+  pageId: string
+  fileId: string
+  projectId: string
+  ownerId: string
+  ownerFullname?: string
+  ownerEmail?: string
+  pageName?: string
+  fileName: string
+  seqn: number
+  content: string
+  participants: string[]
+  createdAt: string
+  modifiedAt: string
+  position: { x: number; y: number }
+  countUnreadComments?: number
+  countComments?: number
+  isResolved?: boolean
+  frameId?: string
+}
+
+/**
+ * A single reply comment within a `CommentThread`.
+ * Returned by `get-comments` and `create-comment`.
+ */
+export type Comment = {
+  id: string
+  threadId: string
+  fileId: string
+  ownerId: string
+  ownerFullname?: string
+  ownerEmail?: string
+  createdAt: string
+  modifiedAt: string
+  content: string
+}
+
+/**
+ * A Penpot file snapshot (named version).
+ * Returned by `get-file-snapshots` and `create-file-snapshot`.
+ *
+ * `createdBy` is `"user"` for snapshots created explicitly via the UI or API,
+ * or `"system"` for automatic backups Penpot creates before a restore operation.
+ * `lockedBy` is the profile UUID of the user who locked it (or absent if unlocked).
+ * Only user-created snapshots (`createdBy === "user"`) can be renamed, deleted, or locked.
+ */
+export type FileSnapshot = {
+  id: string
+  fileId: string
+  label: string
+  revn: number
+  version: number
+  createdAt: string
+  modifiedAt: string
+  createdBy: 'user' | 'system' | 'admin'
+  profileId?: string
+  lockedBy?: string
+  deletedAt?: string
 }

@@ -257,6 +257,18 @@ type BaseParams = {
   blocked?: boolean
   /** Blend mode (e.g. 'normal', 'multiply', 'screen', 'overlay'). Defaults to 'normal'. */
   blendMode?: string
+  /**
+   * Horizontal resize constraint — how the shape behaves when its parent frame resizes.
+   * `left`/`right`: fix distance to the left/right edge. `leftright`: fix both edges (stretch).
+   * `center`: stay centered. `scale`: scale proportionally (default).
+   */
+  constraintsH?: 'left' | 'right' | 'leftright' | 'center' | 'scale'
+  /**
+   * Vertical resize constraint — how the shape behaves when its parent frame resizes.
+   * `top`/`bottom`: fix distance to the top/bottom edge. `topbottom`: fix both edges (stretch).
+   * `center`: stay centered. `scale`: scale proportionally (default).
+   */
+  constraintsV?: 'top' | 'bottom' | 'topbottom' | 'center' | 'scale'
 }
 
 type CornerRadii = { r1?: number; r2?: number; r3?: number; r4?: number }
@@ -392,6 +404,8 @@ export function rect(
     r2,
     r3,
     r4,
+    constraintsH,
+    constraintsV,
   } = params
   return {
     id,
@@ -410,6 +424,8 @@ export function rect(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: fills ?? [],
     strokes: strokes ?? [],
     shadows: shadows ?? [],
@@ -453,6 +469,8 @@ export function frame(
     r2,
     r3,
     r4,
+    constraintsH,
+    constraintsV,
   } = params
   return {
     id,
@@ -471,6 +489,8 @@ export function frame(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: fills ?? [{ 'fill-color': '#FFFFFF', 'fill-opacity': 1 }],
     strokes: strokes ?? [],
     shadows: shadows ?? [],
@@ -567,6 +587,8 @@ export function text(
     growType = 'auto-width',
     verticalAlign = 'top',
     shadows,
+    constraintsH,
+    constraintsV,
   } = params
 
   let fills: Fill[]
@@ -638,6 +660,8 @@ export function text(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills,
     shadows: shadows ?? [],
     'grow-type': growType,
@@ -720,7 +744,7 @@ export function circle(
     shadows?: Shadow[]
   },
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, fills, strokes, shadows } = params
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, constraintsH, constraintsV, fills, strokes, shadows } = params
   return {
     id,
     type: 'circle',
@@ -738,6 +762,8 @@ export function circle(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: fills ?? [],
     strokes: strokes ?? [],
     shadows: shadows ?? [],
@@ -762,7 +788,7 @@ export function path(
     shadows?: Shadow[]
   },
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, content, fills, strokes, shadows } = params
+  const { id = randomUUID(), name, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, constraintsH, constraintsV, content, fills, strokes, shadows } = params
   const bbox = pathBoundingBox(content)
   const { x, y, width, height } = bbox
   return {
@@ -782,6 +808,8 @@ export function path(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: fills ?? [],
     strokes: strokes ?? [],
     shadows: shadows ?? [],
@@ -812,7 +840,7 @@ export function bool(
     shadows?: Shadow[]
   },
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, boolType, fills, strokes, shadows } = params
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, constraintsH, constraintsV, boolType, fills, strokes, shadows } = params
   return {
     id,
     type: 'bool',
@@ -831,6 +859,8 @@ export function bool(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: fills ?? [],
     strokes: strokes ?? [],
     shadows: shadows ?? [],
@@ -851,7 +881,7 @@ export function bool(
 export function group(
   params: BaseParams & { shapes?: string[] },
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, shapes } = params
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, constraintsH, constraintsV, shapes } = params
   return {
     id,
     type: 'group',
@@ -869,6 +899,8 @@ export function group(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     shapes: shapes ?? [],
     ...layoutItemAttrs(layoutItem),
   }
@@ -899,7 +931,7 @@ export type ImageMetadata = {
 export function image(
   params: BaseParams & { metadata: ImageMetadata },
 ): Record<string, unknown> {
-  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, metadata } = params
+  const { id = randomUUID(), name, x, y, width, height, rotation = 0, parentId, frameId, layoutItem, opacity, hidden, blocked, blendMode, constraintsH, constraintsV, metadata } = params
   return {
     id,
     type: 'image',
@@ -917,6 +949,8 @@ export function image(
     ...(hidden !== undefined && { hidden }),
     ...(blocked !== undefined && { blocked }),
     ...(blendMode !== undefined && { 'blend-mode': blendMode }),
+    ...(constraintsH !== undefined && { 'constraints-h': constraintsH }),
+    ...(constraintsV !== undefined && { 'constraints-v': constraintsV }),
     fills: [],
     strokes: [],
     shadows: [],
@@ -999,6 +1033,18 @@ export type EditableShapeFields = {
    * Stored on the content root node; populated for text shapes, undefined for others.
    */
   verticalAlign?: string
+  /**
+   * Horizontal resize constraint (`constraints-h`): how the shape behaves when its parent
+   * frame resizes. `left`/`right`: fix distance to that edge. `leftright`: fix both.
+   * `center`: stay centered. `scale`: scale proportionally.
+   */
+  constraintsH?: string
+  /**
+   * Vertical resize constraint (`constraints-v`): how the shape behaves when its parent
+   * frame resizes. `top`/`bottom`: fix distance to that edge. `topbottom`: fix both.
+   * `center`: stay centered. `scale`: scale proportionally.
+   */
+  constraintsV?: string
 }
 
 /**
@@ -1226,6 +1272,8 @@ export function extractEditableFields(shape: ShapeNode): EditableShapeFields {
     paragraphs,
     growType: ((shape as Record<string, unknown>)['grow-type'] ?? (shape as Record<string, unknown>).growType) as string | undefined,
     verticalAlign: content?.verticalAlign,
+    constraintsH: (shape as Record<string, unknown>)['constraints-h'] as string | undefined,
+    constraintsV: (shape as Record<string, unknown>)['constraints-v'] as string | undefined,
   }
 }
 

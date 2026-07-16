@@ -11,11 +11,17 @@
  * reads the literal `auth-token` cookie and nothing else) and empirically
  * against a live instance.
  *
- * Two auth modes are supported:
+ * Three auth modes are supported:
  *
  *   'password' — logs in once with email/password to obtain the cookie,
  *     caches it for the process lifetime, and re-logs-in automatically on
  *     expiry. Works for Penpot instances that expose password login.
+ *
+ *   'oidc' — headless OIDC/SSO login: the server follows Penpot's OAuth
+ *     redirect chain to the identity provider's login page, submits the
+ *     HTML form with the supplied username/password, and captures the
+ *     resulting auth-token cookie. Works for form-based IdPs (Keycloak,
+ *     Authentik, Dex, …). Re-logs-in automatically on expiry.
  *
  *   'cookie' — accepts a raw auth-token value the caller already obtained
  *     (e.g. by completing an OIDC/SSO login in a real browser and copying
@@ -25,6 +31,7 @@
  */
 
 import { encodeMap, kw, uuid } from './transit.js'
+import { loginHeadlessOidc } from './oidc-auth.js'
 
 export class PenpotExporterError extends Error {
   constructor(
@@ -36,7 +43,7 @@ export class PenpotExporterError extends Error {
   }
 }
 
-export type ExportFormat = 'png' | 'svg'
+export type ExportFormat = 'png' | 'svg' | 'pdf'
 
 export type ExportResult = {
   data: Buffer
@@ -44,9 +51,18 @@ export type ExportResult = {
   filename: string
 }
 
+export type BatchExportSpec = {
+  shapeId: string
+  pageId: string
+  format: ExportFormat
+  scale: number
+  name: string
+}
+
 /** Discriminated union describing how the exporter authenticates. */
 export type ExporterAuth =
   | { mode: 'password'; email: string; password: string }
+  | { mode: 'oidc'; username: string; password: string; provider: string }
   | { mode: 'cookie'; authTokenCookie: string }
 
 export class PenpotExporterClient {
@@ -66,7 +82,7 @@ export class PenpotExporterClient {
   private async login(): Promise<void> {
     if (this.auth.mode !== 'password') {
       // Should never be reached — ensureSession guards this.
-      throw new Error('Internal error: login() called in cookie auth mode')
+      throw new Error('Internal error: login() called in non-password auth mode')
     }
     const res = await fetch(`${this.baseUrl}/api/rpc/command/login-with-password`, {
       method: 'POST',
@@ -112,13 +128,26 @@ export class PenpotExporterClient {
     this.profileId = profile.id
   }
 
+  private async loginOidc(): Promise<void> {
+    if (this.auth.mode !== 'oidc') {
+      throw new Error('Internal error: loginOidc() called in non-oidc auth mode')
+    }
+    const { username, password, provider } = this.auth
+    this.authCookie = await loginHeadlessOidc(this.baseUrl, provider, username, password)
+    // profileId is fetched separately by ensureSession() via fetchProfileId()
+  }
+
   private async ensureSession(): Promise<{ cookie: string; profileId: string }> {
     if (!this.authCookie) {
-      // password mode only — cookie mode pre-seeds authCookie in the constructor.
-      await this.login()
+      if (this.auth.mode === 'password') {
+        await this.login()
+      } else if (this.auth.mode === 'oidc') {
+        await this.loginOidc()
+      }
+      // cookie mode pre-seeds authCookie in the constructor
     }
     if (!this.profileId) {
-      if (this.auth.mode === 'cookie') {
+      if (this.auth.mode === 'cookie' || this.auth.mode === 'oidc') {
         await this.fetchProfileId()
       }
       // In password mode profileId is always set by login() above.
@@ -168,7 +197,7 @@ export class PenpotExporterClient {
 
     // The session cookie can expire between calls.
     if ((res.status === 401 || res.status === 403) && retry) {
-      if (this.auth.mode === 'password') {
+      if (this.auth.mode === 'password' || this.auth.mode === 'oidc') {
         // Re-login and retry once.
         this.authCookie = undefined
         this.profileId = undefined
@@ -210,5 +239,102 @@ export class PenpotExporterClient {
       mimeType: mtype,
       filename,
     }
+  }
+
+  /**
+   * Exports multiple shapes in a single request to the Penpot exporter,
+   * returning one ExportResult per spec in the same order.
+   */
+  async exportShapesBatch(
+    fileId: string,
+    specs: BatchExportSpec[],
+    retry: boolean = true,
+  ): Promise<ExportResult[]> {
+    if (specs.length === 0) return []
+
+    const { cookie, profileId } = await this.ensureSession()
+
+    const body = encodeMap({
+      cmd: kw('export-shapes'),
+      wait: true,
+      'profile-id': uuid(profileId),
+      exports: specs.map(
+        (spec) =>
+          new Map<string, any>([
+            ['page-id', uuid(spec.pageId)],
+            ['file-id', uuid(fileId)],
+            ['object-id', uuid(spec.shapeId)],
+            ['type', kw(spec.format)],
+            ['scale', spec.scale],
+            ['suffix', ''],
+            ['name', spec.name],
+          ]),
+      ),
+    })
+
+    const res = await fetch(`${this.baseUrl}/api/export`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/transit+json',
+        Accept: 'application/transit+json',
+        Cookie: `auth-token=${cookie}`,
+      },
+      body,
+    })
+
+    const text = await res.text()
+
+    if ((res.status === 401 || res.status === 403) && retry) {
+      if (this.auth.mode === 'password' || this.auth.mode === 'oidc') {
+        this.authCookie = undefined
+        this.profileId = undefined
+        return this.exportShapesBatch(fileId, specs, false)
+      } else {
+        throw new PenpotExporterError(
+          'export',
+          res.status,
+          'The PENPOT_AUTH_TOKEN_COOKIE session has expired. ' +
+            'Obtain a fresh auth-token cookie by completing the OIDC/SSO login in your browser ' +
+            '(DevTools → Application → Cookies → auth-token), update PENPOT_AUTH_TOKEN_COOKIE ' +
+            'with the new value, and restart the MCP server.',
+        )
+      }
+    }
+
+    if (res.status < 200 || res.status >= 300) {
+      throw new PenpotExporterError('export', res.status, text)
+    }
+
+    // Parse all result entries from the transit+json response.
+    // Each export result appears as a transit map containing :uri, :mtype, :filename keys;
+    // matchAll extracts them all in document order, which matches the exports array order.
+    const uris = [...text.matchAll(/"~:uri":\{"~#uri":"([^"]+)"\}/g)].map((m) => m[1]!)
+    const mtypes = [...text.matchAll(/"~:mtype":"([^"]+)"/g)].map((m) => m[1]!)
+    const filenameMatches = [...text.matchAll(/"~:filename":"([^"]+)"/g)].map((m) => m[1])
+
+    if (uris.length !== specs.length) {
+      throw new PenpotExporterError(
+        'export',
+        res.status,
+        `Expected ${specs.length} export result(s) but got ${uris.length} URI(s) in response`,
+      )
+    }
+
+    return Promise.all(
+      uris.map(async (uri, i) => {
+        const assetRes = await fetch(uri, {
+          headers: { Cookie: `auth-token=${cookie}` },
+        })
+        if (assetRes.status < 200 || assetRes.status >= 300) {
+          throw new PenpotExporterError('download', assetRes.status, await assetRes.text())
+        }
+        const arrayBuffer = await assetRes.arrayBuffer()
+        return {
+          data: Buffer.from(arrayBuffer),
+          mimeType: mtypes[i] ?? `image/${specs[i]!.format}`,
+          filename: filenameMatches[i] ?? `${specs[i]!.name}.${specs[i]!.format}`,
+        } satisfies ExportResult
+      }),
+    )
   }
 }
