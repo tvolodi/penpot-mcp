@@ -185,9 +185,9 @@ function getChangedContent(
   client: PenpotRpcClient,
   changeIndex = 0,
 ): Record<string, unknown> {
-  const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]
+  const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]!
   const changes = call[3] as Array<{ obj: { content: Record<string, unknown> } }>
-  return changes[changeIndex].obj.content
+  return changes[changeIndex]!.obj.content
 }
 
 /** Collect all leaf texts from a content tree (the get-file or add-obj format). */
@@ -244,9 +244,9 @@ describe('penpot_replace_text', () => {
     })) as { replacedShapes: Array<{ shapeId: string; name: string; occurrences: number }>; totalOccurrences: number; revn: number }
 
     expect(result.replacedShapes).toHaveLength(1)
-    expect(result.replacedShapes[0].shapeId).toBe('s1')
-    expect(result.replacedShapes[0].name).toBe('Greeting')
-    expect(result.replacedShapes[0].occurrences).toBe(1)
+    expect(result.replacedShapes[0]!.shapeId).toBe('s1')
+    expect(result.replacedShapes[0]!.name).toBe('Greeting')
+    expect(result.replacedShapes[0]!.occurrences).toBe(1)
     expect(result.totalOccurrences).toBe(1)
     expect(result.revn).toBe(1)
 
@@ -362,7 +362,7 @@ describe('penpot_replace_text', () => {
     expect(result.totalOccurrences).toBe(2)
     // Single updateFile call with two changes.
     expect((client.updateFile as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
-    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]
+    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect((call[3] as unknown[]).length).toBe(2)
   })
 
@@ -384,7 +384,7 @@ describe('penpot_replace_text', () => {
 
     // Only the text shape is updated.
     expect(result.totalReplacedShapes).toBe(1)
-    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]
+    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect((call[3] as unknown[]).length).toBe(1)
   })
 
@@ -408,7 +408,7 @@ describe('penpot_replace_text', () => {
     })) as { totalReplacedShapes: number }
 
     expect(result.totalReplacedShapes).toBe(2)
-    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]
+    const call = (client.updateFile as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect((call[3] as unknown[]).length).toBe(2)
   })
 

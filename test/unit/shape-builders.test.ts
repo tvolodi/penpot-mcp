@@ -1504,6 +1504,7 @@ describe('circle', () => {
 describe('opacity, hidden, blocked, blendMode fields', () => {
   it('extracts opacity/hidden/blocked/blendMode from shape objects', () => {
     const shape = {
+      id: 'test-id',
       opacity: 0.5,
       hidden: true,
       blocked: false,
@@ -1519,7 +1520,7 @@ describe('opacity, hidden, blocked, blendMode fields', () => {
   })
 
   it('extracts undefined for missing opacity/hidden/blocked/blendMode fields', () => {
-    const shape = { name: 'Test', type: 'rect' }
+    const shape = { id: 'test-id', name: 'Test', type: 'rect' }
     const extracted = extractEditableFields(shape)
     expect(extracted.opacity).toBeUndefined()
     expect(extracted.hidden).toBeUndefined()
@@ -1538,7 +1539,7 @@ describe('opacity, hidden, blocked, blendMode fields', () => {
   })
 
   it('includes hidden in frame builder output when provided', () => {
-    const obj = frame({ name: 'F', x: 0, y: 0, width: 100, height: 100, parentId: ROOT_FRAME_ID, hidden: true })
+    const obj = frame({ name: 'F', x: 0, y: 0, width: 100, height: 100, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID, hidden: true })
     expect(obj.hidden).toBe(true)
   })
 
@@ -1581,7 +1582,7 @@ describe('opacity, hidden, blocked, blendMode fields', () => {
   })
 
   it('converts blendMode to blend-mode in image builder output', () => {
-    const obj = image({ name: 'I', x: 0, y: 0, width: 50, height: 50, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID, blendMode: 'multiply' })
+    const obj = image({ name: 'I', x: 0, y: 0, width: 50, height: 50, parentId: ROOT_FRAME_ID, frameId: ROOT_FRAME_ID, blendMode: 'multiply', metadata: { id: 'media-1', width: 50, height: 50, mtype: 'image/png' } })
     expect((obj as Record<string, unknown>)['blend-mode']).toBe('multiply')
   })
 
@@ -1655,7 +1656,7 @@ describe('path', () => {
     expect(obj.x).toBe(0)
     expect(obj.width).toBeGreaterThan(0)
     // The bounding box must enclose both endpoints
-    expect(obj.x + obj.width).toBeGreaterThanOrEqual(0)
+    expect((obj.x as number) + (obj.width as number)).toBeGreaterThanOrEqual(0)
   })
 
   it('selrect matches computed bounding box', () => {
@@ -1777,6 +1778,7 @@ describe('constraintsH / constraintsV', () => {
 
   it('extracts constraintsH and constraintsV from shape objects via extractEditableFields', () => {
     const shape: ShapeNode = {
+      id: 'test-id',
       type: 'rect',
       name: 'R',
       'constraints-h': 'left',
@@ -1788,7 +1790,7 @@ describe('constraintsH / constraintsV', () => {
   })
 
   it('returns undefined constraintsH/constraintsV when fields are absent', () => {
-    const shape: ShapeNode = { type: 'rect', name: 'R' }
+    const shape: ShapeNode = { id: 'test-id', type: 'rect', name: 'R' }
     const fields = extractEditableFields(shape)
     expect(fields.constraintsH).toBeUndefined()
     expect(fields.constraintsV).toBeUndefined()

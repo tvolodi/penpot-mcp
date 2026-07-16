@@ -60,7 +60,7 @@ describe('in-memory mode', () => {
     const cp = await saveCheckpoint('file-1', PAGES)
     expect(cp.id).toMatch(/^[0-9a-f-]{36}$/)
     expect(cp.fileId).toBe('file-1')
-    expect(cp.pages['page-1']['shape-1']).toBeDefined()
+    expect(cp.pages['page-1']!['shape-1']).toBeDefined()
   })
 
   it('getCheckpoint retrieves the saved checkpoint', async () => {
@@ -89,9 +89,9 @@ describe('in-memory mode', () => {
     const mutablePages: typeof PAGES = { 'page-1': { [DUMMY_SHAPE.id]: { ...DUMMY_SHAPE } } }
     const cp = await saveCheckpoint('file-1', mutablePages)
     // Mutate the original object after saving.
-    mutablePages['page-1'][DUMMY_SHAPE.id].x = 999
+    mutablePages['page-1']![DUMMY_SHAPE.id]!.x = 999
     const fetched = getCheckpoint(cp.id)!
-    expect(fetched.pages['page-1'][DUMMY_SHAPE.id].x).toBe(0)
+    expect(fetched.pages['page-1']![DUMMY_SHAPE.id]!.x).toBe(0)
   })
 
   it('pageId is stored when supplied', async () => {

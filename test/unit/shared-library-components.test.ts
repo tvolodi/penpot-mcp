@@ -363,7 +363,7 @@ describe('penpot_add_component_instance', () => {
 
     const fileCalls = (client.getFile as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0])
     // Only one getFile call, for the own file
-    expect(fileCalls.filter((id: string) => id === FILE_ID)).toHaveLength(1)
+    expect(fileCalls.filter((id: unknown) => id === FILE_ID)).toHaveLength(1)
     expect(fileCalls).not.toContain(LIBRARY_FILE_ID)
   })
 
