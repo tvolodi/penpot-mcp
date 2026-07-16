@@ -1801,10 +1801,12 @@ const checkpointTool: ToolDefinition<z.infer<typeof checkpointInput>> = {
     'Snapshot shapes so a subsequent penpot_restore_checkpoint call can undo whatever ' +
     'happens between now and then — including a wrong penpot_delete_shapes call, which otherwise has no undo ' +
     'path short of Penpot\'s own UI. When pageId is supplied only that page is snapshotted; omit pageId to ' +
-    'snapshot every page in the file (whole-file checkpoint). Held in the MCP server\'s memory (not persisted ' +
-    'to disk or to the Penpot file itself), reusable across multiple restores, until explicitly discarded via ' +
-    'penpot_discard_checkpoint or the server process restarts. Call this immediately before a risky ' +
-    'multi-step edit; pass the returned checkpointId to penpot_restore_checkpoint to undo everything since.',
+    'snapshot every page in the file (whole-file checkpoint). Reusable across multiple restores until ' +
+    'explicitly discarded via penpot_discard_checkpoint. When the server is configured with ' +
+    'PENPOT_CHECKPOINTS_PATH the checkpoint is also written to disk and will survive a server restart; ' +
+    'without that setting it lives only in process memory and is lost on restart. Call this immediately ' +
+    'before a risky multi-step edit; pass the returned checkpointId to penpot_restore_checkpoint to undo ' +
+    'everything since.',
   inputSchema: checkpointInput,
   handler: async (client, { fileId, pageId }) => {
     const file = await client.getFile(fileId)
@@ -1815,7 +1817,7 @@ const checkpointTool: ToolDefinition<z.infer<typeof checkpointInput>> = {
       if (!page) throw new Error(`penpot_checkpoint: page ${pid} not found in file ${fileId}`)
       pages[pid] = page.objects as Record<string, ShapeNode>
     }
-    const checkpoint = saveCheckpoint(fileId, pages, pageId)
+    const checkpoint = await saveCheckpoint(fileId, pages, pageId)
     const totalShapes = Object.values(pages).reduce((sum, objs) => sum + Object.keys(objs).length, 0)
     return {
       checkpointId: checkpoint.id,
@@ -1896,13 +1898,147 @@ const discardCheckpointTool: ToolDefinition<z.infer<typeof discardCheckpointInpu
   name: 'penpot_discard_checkpoint',
   description:
     'Free a checkpoint taken via penpot_checkpoint without restoring it, once it is no longer needed. ' +
-    'Checkpoints otherwise persist in the MCP server\'s memory for the life of the process.',
+    'Removes both the in-memory entry and, when disk persistence is enabled (PENPOT_CHECKPOINTS_PATH), ' +
+    'the corresponding file on disk.',
   inputSchema: discardCheckpointInput,
   handler: async (_client, { checkpointId }) => {
-    const existed = deleteCheckpoint(checkpointId)
+    const existed = await deleteCheckpoint(checkpointId)
     return { checkpointId, discarded: existed }
   },
 }
+
+// ── Component-instance drift detection ────────────────────────────────────────
+
+/**
+ * Shape fields that are compared to detect drift between a component instance's
+ * root and its main component's root. Position (x/y) is intentionally excluded
+ * because every placed instance is at a different canvas location by design.
+ */
+const DRIFT_FIELDS = [
+  'name',
+  'fills',
+  'strokes',
+  'shadows',
+  'opacity',
+  'hidden',
+  'blendMode',
+  'width',
+  'height',
+  'constraintsH',
+  'constraintsV',
+  'content', // text shapes: paragraph/run content
+] as const
+
+export type ComponentLinkState = 'linked' | 'detached' | 'not-an-instance' | 'main-component-root'
+
+export type ComponentInfo = {
+  /** Whether this shape is a component instance root, a main-component root, orphaned, or a plain shape. */
+  linkState: ComponentLinkState
+  /** The component UUID, when the shape is any form of component root. */
+  componentId?: string
+  /** The file that owns the component definition (may differ from the current file for library components). */
+  componentFileId?: string
+  /** For `linked` instances in the same file: the id of the main-instance shape. */
+  mainInstanceId?: string
+  /** For `linked` instances in the same file: the page id where the main-instance lives. */
+  mainInstancePage?: string
+  /**
+   * For `linked` instances in the same file: the list of field names (camelCase) whose
+   * value on this instance differs from the main component's current definition.
+   * An empty array means no drift — the instance is in sync with its component.
+   * Omitted for library components (cross-file drift requires an extra network call)
+   * and for `main-component-root` / `detached` / `not-an-instance` shapes.
+   */
+  driftedFields?: string[]
+}
+
+/**
+ * Computes component link state and drift info for a single shape node.
+ *
+ * `components` comes from `file.data.components` (camelCase keys, `FileComponent` values).
+ * `pagesIndex` comes from `file.data.pagesIndex` (used to look up the main-instance shape
+ * for drift comparison). Both are already in memory — no extra network calls.
+ *
+ * The returned `driftedFields` array lists the camelCase field names that differ
+ * between this instance root and the main component root. An empty array means the
+ * instance is fully in sync. For library components (`componentFileId !== fileId`)
+ * drift is not computed because the library file's pages are not fetched.
+ */
+export function computeComponentInfo(
+  shape: ShapeNode,
+  fileId: string,
+  components: Record<string, { id: string; mainInstanceId: string; mainInstancePage: string }>,
+  pagesIndex: Record<string, { objects: Record<string, ShapeNode> }>,
+): ComponentInfo {
+  // get-file returns camelCase; guard against kebab-case keys in mocks / older responses
+  const componentId = (shape.componentId ?? shape['component-id']) as string | undefined
+  const componentFile = (shape.componentFile ?? shape['component-file']) as string | undefined
+  const isMainInstance = Boolean(shape.mainInstance ?? shape['main-instance'])
+  const isComponentRoot = Boolean(shape.componentRoot ?? shape['component-root'])
+
+  if (!componentId) {
+    return { linkState: 'not-an-instance' }
+  }
+
+  // The main-instance root of a component definition (not a placed copy)
+  if (isMainInstance && isComponentRoot) {
+    return {
+      linkState: 'main-component-root',
+      componentId,
+      ...(componentFile ? { componentFileId: componentFile } : {}),
+    }
+  }
+
+  // Check whether the component lives in the current file's components map
+  const component = components[componentId]
+
+  if (!component) {
+    // Component not in this file's map — either a library component or orphaned
+    if (componentFile && componentFile !== fileId) {
+      // Known external library component: linked but drift not computable without fetching the library
+      return {
+        linkState: 'linked',
+        componentId,
+        componentFileId: componentFile,
+      }
+    }
+    // Component was deleted from this file — instance is detached/orphaned
+    return {
+      linkState: 'detached',
+      componentId,
+      ...(componentFile ? { componentFileId: componentFile } : {}),
+    }
+  }
+
+  // Linked instance whose main component is in this same file
+  const info: ComponentInfo = {
+    linkState: 'linked',
+    componentId,
+    componentFileId: componentFile ?? fileId,
+    mainInstanceId: component.mainInstanceId,
+    mainInstancePage: component.mainInstancePage,
+  }
+
+  // Drift: compare each driftable field against the main-instance shape
+  const mainPage = pagesIndex[component.mainInstancePage]
+  const mainShape = mainPage?.objects[component.mainInstanceId]
+
+  if (mainShape) {
+    const driftedFields: string[] = []
+    for (const field of DRIFT_FIELDS) {
+      const instanceVal = shape[field]
+      const mainVal = mainShape[field]
+      if (JSON.stringify(instanceVal) !== JSON.stringify(mainVal)) {
+        driftedFields.push(field)
+      }
+    }
+    info.driftedFields = driftedFields
+  }
+
+  return info
+}
+
+// ── penpot_get_shape ───────────────────────────────────────────────────────────
 
 const getShapeInput = z.object({
   fileId: z.string().min(1),
@@ -1941,7 +2077,12 @@ const getShape: ToolDefinition<z.infer<typeof getShapeInput>> = {
     'Look up a single shape by id on a page, without pulling the whole page via penpot_get_file_snapshot. ' +
     'By default, nests the shape\'s full descendant subtree (frames/groups\' children) under its "shapes" ' +
     'field instead of leaving them as bare ids; set includeDescendants to false for just the shape itself, or ' +
-    'maxDepth to cap how many levels deep the nesting goes.',
+    'maxDepth to cap how many levels deep the nesting goes. ' +
+    'Always includes a "componentInfo" field reporting the shape\'s component link state: ' +
+    '"not-an-instance" (plain shape), "main-component-root" (the component\'s own main instance), ' +
+    '"linked" (a placed copy linked to a component — also includes driftedFields listing any field names ' +
+    'whose value on this instance differs from the main component\'s current definition), or ' +
+    '"detached" (componentId present but the component no longer exists in this file).',
   inputSchema: getShapeInput,
   handler: async (client, { fileId, pageId, shapeId, includeDescendants, maxDepth }) => {
     const file = await client.getFile(fileId)
@@ -1952,8 +2093,18 @@ const getShape: ToolDefinition<z.infer<typeof getShapeInput>> = {
     }
 
     const objects = page.objects as Record<string, ShapeNode>
-    if (!includeDescendants) return { ...objects[shapeId] }
-    return buildShapeTree(shapeId, objects, 0, maxDepth)
+    const shapeResult = includeDescendants
+      ? buildShapeTree(shapeId, objects, 0, maxDepth)
+      : { ...objects[shapeId] }
+
+    const componentInfo = computeComponentInfo(
+      objects[shapeId]!,
+      fileId,
+      (file.data.components ?? {}) as Record<string, { id: string; mainInstanceId: string; mainInstancePage: string }>,
+      file.data.pagesIndex as Record<string, { objects: Record<string, ShapeNode> }>,
+    )
+
+    return { ...shapeResult, componentInfo }
   },
 }
 
@@ -1992,8 +2143,9 @@ const findShapes: ToolDefinition<z.infer<typeof findShapesInput>> = {
     'penpot_get_file_snapshot by hand. Combine "type", "name" (exact match), "nameContains" (case-insensitive ' +
     'substring), "textContains" (case-insensitive substring against text shapes\' rendered characters), ' +
     '"isComponentInstance", and/or "isRoot" — all given filters must match (AND). Omit every filter to list ' +
-    'every shape on the page. Returns each match\'s id, type, name, and position/size, without descendants ' +
-    '(use penpot_get_shape on a match\'s id for its full subtree).',
+    'every shape on the page. Returns each match\'s id, type, name, position/size, and component link state ' +
+    '("linkState": "not-an-instance" | "linked" | "detached" | "main-component-root"), without descendants ' +
+    '(use penpot_get_shape on a match\'s id for its full subtree including detailed componentInfo with driftedFields).',
   inputSchema: findShapesInput,
   handler: async (client, { fileId, pageId, type, name, nameContains, textContains, isComponentInstance, isRoot, limit }) => {
     const file = await client.getFile(fileId)
@@ -2003,6 +2155,8 @@ const findShapes: ToolDefinition<z.infer<typeof findShapesInput>> = {
     const objects = page.objects as Record<string, ShapeNode>
     const nameContainsLower = nameContains?.toLowerCase()
     const textContainsLower = textContains?.toLowerCase()
+    const components = (file.data.components ?? {}) as Record<string, { id: string; mainInstanceId: string; mainInstancePage: string }>
+    const pagesIndex = file.data.pagesIndex as Record<string, { objects: Record<string, ShapeNode> }>
 
     const matches: ShapeNode[] = []
     for (const shape of Object.values(objects)) {
@@ -2028,15 +2182,21 @@ const findShapes: ToolDefinition<z.infer<typeof findShapesInput>> = {
     }
 
     return {
-      shapes: matches.map((shape) => ({
-        id: shape.id,
-        type: shape.type,
-        name: shape.name,
-        x: shape.x,
-        y: shape.y,
-        width: shape.width,
-        height: shape.height,
-      })),
+      shapes: matches.map((shape) => {
+        const info = computeComponentInfo(shape, fileId, components, pagesIndex)
+        return {
+          id: shape.id,
+          type: shape.type,
+          name: shape.name,
+          x: shape.x,
+          y: shape.y,
+          width: shape.width,
+          height: shape.height,
+          linkState: info.linkState,
+          ...(info.componentId !== undefined ? { componentId: info.componentId } : {}),
+          ...(info.driftedFields !== undefined ? { driftedFields: info.driftedFields } : {}),
+        }
+      }),
       count: matches.length,
     }
   },

@@ -18,6 +18,33 @@ export class PenpotRpcError extends Error {
   }
 }
 
+/**
+ * Thrown by `updateFile` when Penpot reports that changes from another session
+ * landed before ours (i.e. `lagged` in the `update-file` response is non-empty).
+ *
+ * The write DID succeed — Penpot applied our changes on top of the lagged ones —
+ * but the resulting file state may not be what was intended. The caller should
+ * re-fetch the file (`penpot_get_file_snapshot`) and verify the current state
+ * before making further edits.
+ *
+ * `result` contains the `update-file` response (including the new `revn`) so
+ * callers that can tolerate concurrent edits may inspect it rather than treating
+ * this as a hard failure.
+ */
+export class PenpotStaleWriteError extends Error {
+  constructor(
+    public readonly laggedCount: number,
+    public readonly result: UpdateFileResult,
+  ) {
+    super(
+      `Stale write detected: ${laggedCount} concurrent change-set(s) from another session ` +
+        `were applied before yours (new revn: ${result.revn}). ` +
+        `Your changes were applied on top — re-fetch the file with penpot_get_file_snapshot ` +
+        `and verify the current state before making further edits.`,
+    )
+  }
+}
+
 export class PenpotRpcClient {
   constructor(
     private readonly baseUrl: string,
@@ -164,13 +191,17 @@ export class PenpotRpcClient {
     changes: Change[],
     sessionId: string = crypto.randomUUID(),
   ): Promise<UpdateFileResult> {
-    return (await this.call('update-file', 'POST', {
+    const result = (await this.call('update-file', 'POST', {
       id: fileId,
       'session-id': sessionId,
       revn,
       vern,
       changes,
     })) as UpdateFileResult
+    if (result.lagged && result.lagged.length > 0) {
+      throw new PenpotStaleWriteError(result.lagged.length, result)
+    }
+    return result
   }
 
   // --- Media uploads ---
@@ -292,6 +323,47 @@ export class PenpotRpcClient {
     await this.call('delete-comment', 'POST', { id: commentId })
     return { deleted: commentId }
   }
+
+  // --- File snapshots (version history) ---
+
+  listFileSnapshots(fileId: string): Promise<FileSnapshot[]> {
+    return this.call('get-file-snapshots', 'GET', { 'file-id': fileId }) as Promise<FileSnapshot[]>
+  }
+
+  getFileSnapshotData(fileId: string, snapshotId: string): Promise<unknown> {
+    return this.call('get-file-snapshot', 'GET', { 'file-id': fileId, id: snapshotId })
+  }
+
+  createFileSnapshot(fileId: string, label?: string): Promise<FileSnapshot> {
+    const params: Record<string, unknown> = { 'file-id': fileId }
+    if (label !== undefined) params['label'] = label
+    return this.call('create-file-snapshot', 'POST', params) as Promise<FileSnapshot>
+  }
+
+  async restoreFileSnapshot(fileId: string, snapshotId: string): Promise<{ restored: string }> {
+    await this.call('restore-file-snapshot', 'POST', { 'file-id': fileId, id: snapshotId })
+    return { restored: snapshotId }
+  }
+
+  async renameFileSnapshot(snapshotId: string, label: string): Promise<{ updated: string }> {
+    await this.call('update-file-snapshot', 'POST', { id: snapshotId, label })
+    return { updated: snapshotId }
+  }
+
+  async deleteFileSnapshot(snapshotId: string): Promise<{ deleted: string }> {
+    await this.call('delete-file-snapshot', 'POST', { id: snapshotId })
+    return { deleted: snapshotId }
+  }
+
+  async lockFileSnapshot(snapshotId: string): Promise<{ locked: string }> {
+    await this.call('lock-file-snapshot', 'POST', { id: snapshotId })
+    return { locked: snapshotId }
+  }
+
+  async unlockFileSnapshot(snapshotId: string): Promise<{ unlocked: string }> {
+    await this.call('unlock-file-snapshot', 'POST', { id: snapshotId })
+    return { unlocked: snapshotId }
+  }
 }
 
 /**
@@ -405,4 +477,27 @@ export type Comment = {
   createdAt: string
   modifiedAt: string
   content: string
+}
+
+/**
+ * A Penpot file snapshot (named version).
+ * Returned by `get-file-snapshots` and `create-file-snapshot`.
+ *
+ * `createdBy` is `"user"` for snapshots created explicitly via the UI or API,
+ * or `"system"` for automatic backups Penpot creates before a restore operation.
+ * `lockedBy` is the profile UUID of the user who locked it (or absent if unlocked).
+ * Only user-created snapshots (`createdBy === "user"`) can be renamed, deleted, or locked.
+ */
+export type FileSnapshot = {
+  id: string
+  fileId: string
+  label: string
+  revn: number
+  version: number
+  createdAt: string
+  modifiedAt: string
+  createdBy: 'user' | 'system' | 'admin'
+  profileId?: string
+  lockedBy?: string
+  deletedAt?: string
 }

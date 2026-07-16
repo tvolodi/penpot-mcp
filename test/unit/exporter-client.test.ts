@@ -322,4 +322,51 @@ describe('PenpotExporterClient.exportShapesBatch', () => {
     )
     expect(exportCalls).toHaveLength(1)
   })
+
+  it('passes each spec\'s pageId individually so shapes from different pages can be batched', async () => {
+    const client = makeClient()
+    const PAGE_ID_2 = 'dddddddd-0000-0000-0000-000000000000'
+    const specs: BatchExportSpec[] = [
+      { shapeId: makeShapeId(1), pageId: PAGE_ID, format: 'png', scale: 1, name: 'shape-1' },
+      { shapeId: makeShapeId(2), pageId: PAGE_ID_2, format: 'svg', scale: 2, name: 'shape-2' },
+    ]
+    const uris = [
+      'https://penpot.example.com/assets/shape-1.png',
+      'https://penpot.example.com/assets/shape-2.svg',
+    ]
+
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(200, JSON.stringify({ id: 'profile-id-1' })),
+    )
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(
+        200,
+        makeExportResponse([
+          { uri: uris[0]!, mtype: 'image/png', filename: 'shape-1.png' },
+          { uri: uris[1]!, mtype: 'image/svg+xml', filename: 'shape-2.svg' },
+        ]),
+      ),
+    )
+    fetchMock.mockResolvedValueOnce(mockBinaryResponse(fakeBytes(1)))
+    fetchMock.mockResolvedValueOnce(mockBinaryResponse(fakeBytes(2)))
+
+    const results = await client.exportShapesBatch(FILE_ID, specs)
+    expect(results).toHaveLength(2)
+    expect(results[0]!.mimeType).toBe('image/png')
+    expect(results[1]!.mimeType).toBe('image/svg+xml')
+
+    // Both page IDs must appear in the single export request body
+    const exportCall = (fetchMock.mock.calls as [string, RequestInit][]).find(([url]) =>
+      url.endsWith('/api/export'),
+    )
+    const body = exportCall![1].body as string
+    expect(body).toContain(PAGE_ID)
+    expect(body).toContain(PAGE_ID_2)
+
+    // Only 1 POST to /api/export regardless of different pages
+    const exportCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(([url]) =>
+      url.endsWith('/api/export'),
+    )
+    expect(exportCalls).toHaveLength(1)
+  })
 })
